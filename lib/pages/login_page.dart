@@ -1,7 +1,10 @@
 import 'package:beewhere/controller/login.api.dart';
+import 'package:beewhere/controller/user_info.api.dart';
 import 'package:beewhere/pages/home_page.dart';
+import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -151,8 +154,28 @@ class _LoginPageState extends State<LoginPage> {
                           ).pop(); // remove loading indicator
 
                           if (result['success']) {
-                            // Optionally, store access_token if needed:
+                            // store access_token:
                             String token = result['data']['access_token'];
+                            // Store token in Provider
+                            Provider.of<AuthProvider>(
+                              context,
+                              listen: false,
+                            ).setToken(token);
+
+                            // Fetch and store user info
+                            final userInfo = await UserInfoApi.getUserInfo(
+                              context,
+                            );
+                            if (userInfo['success']) {
+                              Provider.of<AuthProvider>(
+                                context,
+                                listen: false,
+                              ).setUserInfo(userInfo['data']);
+
+                              print("User Info Saved: ${userInfo['data']}");
+                            }
+
+                            print('Login successful. Token: $token');
 
                             //Navigate to HomePage
                             Navigator.pushReplacement(
