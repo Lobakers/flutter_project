@@ -1,3 +1,4 @@
+import 'package:beewhere/controller/client_detail_api.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:beewhere/widgets/drawer.dart';
@@ -15,6 +16,15 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   String _currentAddress = "Search Location";
   bool _isLoading = false;
+
+  // State variables for work location section only
+  String selectedLocation = ""; // Office / Site / Home / Others
+
+  List<dynamic> clients = [];
+  bool loadingClients = false;
+  bool showForm = false;
+
+  final List<String> workLocations = ["Office", "Site", "Home", "Others"];
 
   @override
   Widget build(BuildContext context) {
@@ -34,8 +44,6 @@ class _HomePageState extends State<HomePage> {
           timeInformation(),
           const SizedBox(height: 10),
           workLocationSelector(),
-          const SizedBox(height: 10),
-          locationDisplay(),
         ],
       ),
     );
@@ -125,42 +133,134 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget workLocationSelector() {
-    final locations = ['Office', 'Site', 'Home', 'Others'];
+  // worklocation display widget start
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: locations.map((title) {
-        return Expanded(
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 10),
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade300, width: 1),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            child: Center(
-              child: Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
+  Widget workLocationSelector() {
+    return Column(
+      children: [
+        Row(
+          children: workLocations.map((loc) {
+            return buildLocationButton(loc);
+          }).toList(),
+        ),
+
+        const SizedBox(height: 10),
+        locationDisplay(),
+
+        // Show form only AFTER selecting a location
+        if (showForm) buildDynamicForm(),
+      ],
+    );
+  }
+
+  Widget buildLocationButton(String title) {
+    bool isSelected = (selectedLocation == title);
+
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => onLocationSelected(title),
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: isSelected ? Colors.blue : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.blue),
+          ),
+          child: Center(
+            child: Text(
+              title,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: isSelected ? Colors.white : Colors.blue,
               ),
             ),
           ),
-        );
-      }).toList(),
+        ),
+      ),
     );
   }
+
+  void onLocationSelected(String title) {
+    setState(() {
+      selectedLocation = title;
+      showForm = true;
+    });
+
+    if (clients.isEmpty) {
+      loadClients();
+    }
+  }
+
+  // ----------------------------- FORM SECTION -----------------------------
+  Widget buildDynamicForm() {
+    return Container(
+      margin: const EdgeInsets.all(10.0),
+      child: Column(
+        children: [
+          SizedBox(height: 20),
+          buildClientDropdown(),
+          SizedBox(height: 15),
+          buildActivityField(),
+        ],
+      ),
+    );
+  }
+
+  Widget buildClientDropdown() {
+    if (loadingClients) return CircularProgressIndicator();
+    if (clients.isEmpty) return Text("No clients available");
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey),
+      ),
+      child: DropdownButton<String>(
+        isExpanded: true,
+        underline: SizedBox(),
+        hint: Text("Select Client"),
+        items: clients.map((c) {
+          return DropdownMenuItem<String>(
+            value: c["CLIENT_GUID"],
+            child: Text(c["NAME"]),
+          );
+        }).toList(),
+        onChanged: (val) {
+          print("Selected client: $val");
+        },
+      ),
+    );
+  }
+
+  Widget buildActivityField() {
+    return TextField(
+      maxLines: 3,
+      decoration: InputDecoration(
+        labelText: "Activity List",
+        hintText: "Add task here",
+        border: OutlineInputBorder(),
+      ),
+    );
+  }
+
+  // ----------------------------- API CALLS -----------------------------
+  Future<void> loadClients() async {
+    setState(() => loadingClients = true);
+
+    try {
+      clients = await ClientDetailApi.getClients(context);
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error loading clients: $e")));
+    }
+
+    setState(() => loadingClients = false);
+  }
+
+  // worklocation display widget end
 
   Widget locationDisplay() {
     return Container(
