@@ -5,6 +5,7 @@ import 'package:beewhere/controller/contract_api.dart';
 import 'package:beewhere/controller/coordinate_api.dart';
 import 'package:beewhere/controller/attendance_profile_api.dart';
 import 'package:beewhere/controller/clock_api.dart';
+import 'package:beewhere/controller/auto_clockout_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
@@ -38,7 +39,7 @@ class _HomePageState extends State<HomePage> {
   // Clock state
   bool _isClockedIn = false;
   String _clockStatus = "You Haven't Clocked In Yet";
-  String? _clockRefGuid; // Needed for clock out
+  String? _clockRefGuid;
   String? _clockInTime;
 
   // Form state
@@ -55,12 +56,23 @@ class _HomePageState extends State<HomePage> {
   List<dynamic> _contracts = [];
   bool _loadingDropdowns = false;
 
-  // Field visibility (from attendance profile)
+  // Field visibility
   Map<String, bool> _fieldVisibility = {};
+
+  AutoClockOutService? _autoClockOutService;
 
   @override
   void initState() {
     super.initState();
+
+    // ✨ FIX: Initialize here safely
+    _autoClockOutService = AutoClockOutService(
+      checkInterval: const Duration(minutes: 1),
+      radiusInMeters: 200.0,
+      // radiusInMeters: 10.0, //testing purpose
+      onLeaveGeofence: _onUserLeftGeofence,
+    );
+
     _initializeData();
     _startTimers();
   }
@@ -69,7 +81,65 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _timer?.cancel();
     _activityController.dispose();
+    _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
     super.dispose();
+  }
+
+  // ✨ CALLBACK: When user leaves geofence area
+  Future<void> _onUserLeftGeofence(double distance) async {
+    debugPrint(
+      '🚨 AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
+    );
+
+    // Show dialog to user
+    if (mounted) {
+      _showAutoClockOutDialog(distance);
+    }
+
+    // Perform clock out
+    await _performClockOut(isAutomatic: true);
+  }
+
+  void _showAutoClockOutDialog(double distance) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: Colors.orange,
+        title: const Text(
+          'Auto Clock Out',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.location_off, size: 50, color: Colors.white),
+            const SizedBox(height: 10),
+            Text(
+              'You have moved ${distance.toStringAsFixed(0)}m away from your work location.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'You have been automatically clocked out.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _initializeData() async {
@@ -103,13 +173,14 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadAttendanceProfile() async {
     final result = await AttendanceProfileApi.getAttendanceProfile(context);
-    if (result['success']) {
+    if (result['success'] && mounted) {
       final provider = Provider.of<AttendanceProvider>(context, listen: false);
       provider.setFromApiResponse(result['data']);
     }
   }
 
   Future<void> _loadDropdownData() async {
+    if (!mounted) return;
     setState(() => _loadingDropdowns = true);
     try {
       _clients = await ClientDetailApi.getClients(context);
@@ -118,12 +189,12 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       debugPrint('Error loading dropdowns: $e');
     }
-    setState(() => _loadingDropdowns = false);
+    if (mounted) setState(() => _loadingDropdowns = false);
   }
 
   Future<void> _checkExistingClock() async {
     final result = await ClockApi.getLatestClock(context);
-    if (result['success'] && result['isClockedIn'] == true) {
+    if (result['success'] && result['isClockedIn'] == true && mounted) {
       setState(() {
         _isClockedIn = true;
         _clockRefGuid = result['clockLogGuid'];
@@ -136,6 +207,9 @@ class _HomePageState extends State<HomePage> {
         _activityController.text = _activityName;
       });
       _updateFieldVisibility(_selectedJobType);
+
+      // ✨ If already clocked in, restart geofence monitoring
+      _startGeofenceMonitoringForClient(_selectedClient);
     }
   }
 
@@ -168,7 +242,7 @@ class _HomePageState extends State<HomePage> {
     final hasPermission = await _handleLocationPermission();
     if (!hasPermission) return;
 
-    setState(() => _isLoading = true);
+    if (mounted) setState(() => _isLoading = true);
 
     try {
       Position position = await Geolocator.getCurrentPosition(
@@ -177,29 +251,136 @@ class _HomePageState extends State<HomePage> {
       _latitude = position.latitude;
       _longitude = position.longitude;
 
-      // Use your backend API to get address
+      // 🧪 DEBUG: Print your real lat/long - COPY THIS TO testMode!
+      debugPrint('═══════════════════════════════════════════');
+      debugPrint('🧪 YOUR REAL LOCATION:');
+      debugPrint('   const double testLat = $_latitude;');
+      debugPrint('   const double testLng = $_longitude;');
+      debugPrint('═══════════════════════════════════════════');
+
       final address = await CoordinateApi.getAddressFromCoordinates(
         context,
         _latitude!,
         _longitude!,
       );
-      setState(() => _currentAddress = address);
+      if (mounted) setState(() => _currentAddress = address);
     } catch (e) {
       debugPrint('Location error: $e');
-      setState(() => _currentAddress = "Failed to get location");
+      if (mounted) setState(() => _currentAddress = "Failed to get location");
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  // ===================== GEOFENCE =====================
+
+  void _startGeofenceMonitoringForClient(String? clientGuid) {
+    // ============================================================
+    // 🧪 TEST MODE - COMMENT OUT THIS BLOCK AFTER TESTING
+    // Using your current location as the "client site"
+    // Walk 500m away to trigger auto clock out
+    // ============================================================
+    const bool testMode = true; // Set to false to disable test mode
+
+    if (testMode) {
+      if (_latitude == null || _longitude == null) {
+        debugPrint('⚠️ TEST MODE: No current location yet!');
+        return;
+      }
+
+      final double testLat = _latitude!; // 👈 Uses YOUR current GPS!
+      final double testLng = _longitude!; // 👈 Uses YOUR current GPS!
+      const String testAddress = "Test Location - Your Current Position";
+
+      debugPrint('🧪 TEST MODE ACTIVE');
+      debugPrint('🎯 Using YOUR CURRENT location as target:');
+      debugPrint('   Lat: $testLat');
+      debugPrint('   Lng: $testLng');
+      debugPrint('📍 Walk 500m away to trigger auto clock out');
+
+      _autoClockOutService?.startMonitoring(
+        targetLat: testLat,
+        targetLng: testLng,
+        targetAddress: testAddress,
+      );
+      return;
+    }
+    // ============================================================
+    // 🧪 END TEST MODE
+    // ============================================================
+
+    if (clientGuid == null || clientGuid.isEmpty) {
+      debugPrint('⚠️ No client selected, skipping geofence');
+      return;
+    }
+
+    // Find client from list
+    dynamic client;
+    try {
+      client = _clients.firstWhere((c) => c['CLIENT_GUID'] == clientGuid);
+    } catch (e) {
+      debugPrint('⚠️ Client not found in list');
+      return;
+    }
+
+    if (client == null) {
+      debugPrint('⚠️ Client is null');
+      return;
+    }
+
+    // Get location data
+    final locationData = client['LOCATION_DATA'] as List<dynamic>?;
+    if (locationData == null || locationData.isEmpty) {
+      debugPrint('⚠️ No location data for client: ${client['NAME']}');
+      return;
+    }
+
+    // Use first location
+    final location = locationData[0];
+    final targetLat = (location['LATITUDE'] as num?)?.toDouble();
+    final targetLng = (location['LONGITUDE'] as num?)?.toDouble();
+    final targetAddress = location['ADDRESS'] as String?;
+
+    if (targetLat == null || targetLng == null) {
+      debugPrint('⚠️ Invalid lat/lng for client');
+      return;
+    }
+
+    debugPrint('🎯 Starting geofence for: ${client['NAME']}');
+    debugPrint('   Location: $targetLat, $targetLng');
+    debugPrint('   Address: $targetAddress');
+
+    // ✨ FIX: Safe null check
+    _autoClockOutService?.startMonitoring(
+      targetLat: targetLat,
+      targetLng: targetLng,
+      targetAddress: targetAddress,
+    );
   }
 
   // ===================== CLOCK IN/OUT =====================
 
   Future<void> _handleClockAction() async {
+    // Validation 1: Job type required
     if (_selectedJobType.isEmpty) {
       _showDialog(
         'Error',
         'Please select a job type (Office/Site/Home/Others)',
       );
+      return;
+    }
+
+    // Validation 2: Client required (only for clock in)
+    if (!_isClockedIn &&
+        _fieldVisibility['client'] == true &&
+        _selectedClient == null) {
+      _showDialog('Error', 'Please select a client');
+      return;
+    }
+
+    // Validation 3: Location required
+    if (_latitude == null || _longitude == null) {
+      _showDialog('Error', 'Please get your current location first');
       return;
     }
 
@@ -230,24 +411,31 @@ class _HomePageState extends State<HomePage> {
       deviceId: DeviceInfoHelper.deviceId,
     );
 
-    if (result['success']) {
+    if (result['success'] && mounted) {
       setState(() {
         _isClockedIn = true;
         _clockRefGuid = result['clockLogGuid'];
         _clockInTime = result['clockTime'];
         _clockStatus = result['clockTime'];
       });
+
+      // ✨ START GEOFENCE MONITORING AFTER CLOCK IN
+      _startGeofenceMonitoringForClient(_selectedClient);
+
       _showSuccessDialog('Clock In Successful', 'Time: ${result['clockTime']}');
     } else {
-      _showDialog('Error', result['message']);
+      _showDialog('Error', result['message'] ?? 'Clock in failed');
     }
   }
 
-  Future<void> _performClockOut() async {
+  Future<void> _performClockOut({bool isAutomatic = false}) async {
     if (_clockRefGuid == null) {
       _showDialog('Error', 'No clock in record found');
       return;
     }
+
+    // ✨ FIX: Safe null check
+    _autoClockOutService?.stopMonitoring();
 
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final userGuid = auth.userInfo?['userId'] ?? '';
@@ -269,11 +457,14 @@ class _HomePageState extends State<HomePage> {
       deviceId: DeviceInfoHelper.deviceId,
     );
 
-    if (result['success']) {
-      _showSuccessDialog(
-        'Clock Out Successful',
-        'In: $_clockInTime\nOut: ${result['clockTime']}',
-      );
+    if (result['success'] && mounted) {
+      if (!isAutomatic) {
+        _showSuccessDialog(
+          'Clock Out Successful',
+          'In: $_clockInTime\nOut: ${result['clockTime']}',
+        );
+      }
+
       setState(() {
         _isClockedIn = false;
         _clockRefGuid = null;
@@ -286,7 +477,7 @@ class _HomePageState extends State<HomePage> {
         _fieldVisibility = {};
       });
     } else {
-      _showDialog('Error', result['message']);
+      _showDialog('Error', result['message'] ?? 'Clock out failed');
     }
   }
 
@@ -305,12 +496,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _showSnackBar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _showDialog(String title, String message) {
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -327,16 +520,21 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _showSuccessDialog(String title, String message) {
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF2DD36F),
-        title: Text(title, textAlign: TextAlign.center),
-        content: Text(message),
+        title: Text(
+          title,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white),
+        ),
+        content: Text(message, style: const TextStyle(color: Colors.white)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
+            child: const Text('OK', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -355,9 +553,27 @@ class _HomePageState extends State<HomePage> {
     final email = auth.userInfo?['email'] ?? 'No email';
     final companyName = auth.userInfo?['companyName'] ?? 'No company';
 
+    // ✨ FIX: Safe check for monitoring status
+    final isMonitoring = _autoClockOutService?.isMonitoring ?? false;
+
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: AppBar(title: const Text('beeWhere')),
+      appBar: AppBar(
+        title: const Text('beeWhere'),
+        actions: [
+          if (isMonitoring)
+            Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Row(
+                children: const [
+                  Icon(Icons.location_on, color: Colors.green, size: 20),
+                  SizedBox(width: 4),
+                  Text('Tracking', style: TextStyle(fontSize: 12)),
+                ],
+              ),
+            ),
+        ],
+      ),
       drawer: const AppDrawer(),
       body: RefreshIndicator(
         onRefresh: _initializeData,
@@ -373,10 +589,56 @@ class _HomePageState extends State<HomePage> {
               if (_selectedJobType.isNotEmpty) _buildForm(),
               const SizedBox(height: 20),
               _buildClockButton(),
+              if (_isClockedIn) _buildGeofenceStatus(),
               const SizedBox(height: 30),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildGeofenceStatus() {
+    final isMonitoring = _autoClockOutService?.isMonitoring ?? false;
+    if (!isMonitoring) return const SizedBox();
+
+    return Container(
+      margin: const EdgeInsets.all(15),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.blue.shade200),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.radar, color: Colors.blue),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Geofence Active',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blue,
+                  ),
+                ),
+                Text(
+                  'Monitoring: ${_autoClockOutService?.targetAddress ?? 'Work Location'}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const Text(
+                  'Auto clock-out if you move >500m away',
+                  style: TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
