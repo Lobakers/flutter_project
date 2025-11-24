@@ -29,7 +29,7 @@ class ClockApi {
         "jobType": jobType,
         "location": {"lat": latitude, "long": longitude, "name": address},
         "clientId": clientId ?? "",
-        "projectId": projectId ?? "",
+        "projectGuid": projectId ?? "", // 👈 FIXED: was "projectId"
         "contractId": contractId ?? "",
         "userAgent": {
           "description": deviceDescription,
@@ -97,7 +97,7 @@ class ClockApi {
         "jobType": jobType,
         "location": {"lat": latitude, "long": longitude, "name": address},
         "clientId": clientId ?? "",
-        "projectId": projectId ?? "",
+        "projectGuid": projectId ?? "", // 👈 FIXED: was "projectId"
         "contractId": contractId ?? "",
         "userAgent": {
           "description": deviceDescription,
@@ -176,9 +176,9 @@ class ClockApi {
           "jobType": latest['JOB_TYPE'],
           "address": latest['ADDRESS'],
           "clientId": latest['CLIENT_ID'],
-          "projectId": latest['PROJECT_GUID'],
-          "contractId": latest['CONTRACT_GUID'],
-          "activityName": latest['ACTIVITY']?['NAME'],
+          "projectId": latest['PROJECT_ID'], // 👈 Not PROJECT_GUID
+          "contractId": latest['CONTRACT_ID'],
+          "activityName": "", // 👈 FIXED: ACTIVITY is XML string, not object
         };
       } else {
         debugPrint('❌ GetLatestClock Failed: Status ${response.statusCode}');

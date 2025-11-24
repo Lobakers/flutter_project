@@ -24,7 +24,7 @@ class AutoClockOutService {
 
   // ✨ NEW: GPS drift protection
   int _violationCount = 0;
-  final int _requiredViolations = 3; // Must be outside 3 times in a row
+  final int _requiredViolations = 2; // Must be outside 3 times in a row
 
   AutoClockOutService({
     this.checkInterval = const Duration(minutes: 1),

@@ -68,7 +68,7 @@ class _HomePageState extends State<HomePage> {
     // ✨ FIX: Initialize here safely
     _autoClockOutService = AutoClockOutService(
       checkInterval: const Duration(minutes: 1),
-      radiusInMeters: 200.0,
+      radiusInMeters: 3.0,
       // radiusInMeters: 10.0, //testing purpose
       onLeaveGeofence: _onUserLeftGeofence,
     );
