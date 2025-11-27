@@ -6,9 +6,12 @@ import 'package:beewhere/controller/coordinate_api.dart';
 import 'package:beewhere/controller/attendance_profile_api.dart';
 import 'package:beewhere/controller/clock_api.dart';
 import 'package:beewhere/controller/auto_clockout_service.dart';
+import 'package:beewhere/services/background_geofence_service.dart';
+import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
+import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:beewhere/widgets/device_info_helper.dart';
 import 'package:beewhere/widgets/drawer.dart';
 import 'package:flutter/material.dart';
@@ -59,15 +62,26 @@ class _HomePageState extends State<HomePage> {
   // Field visibility
   Map<String, bool> _fieldVisibility = {};
 
+  // Navigation state
+  int _currentIndex = 0;
+
   AutoClockOutService? _autoClockOutService;
+
+  double? _currentUserLat;
+  double? _currentUserLng;
+  double? _lastDistance;
+  int? _lastViolationCount;
 
   @override
   void initState() {
     super.initState();
 
+    // ✨ Initialize notification service
+    NotificationService.init();
+
     // ✨ FIX: Initialize here safely
     _autoClockOutService = AutoClockOutService(
-      checkInterval: const Duration(minutes: 1),
+      checkInterval: const Duration(seconds: 15),
       radiusInMeters: 3.0,
       // radiusInMeters: 10.0, //testing purpose
       onLeaveGeofence: _onUserLeftGeofence,
@@ -91,13 +105,25 @@ class _HomePageState extends State<HomePage> {
       '🚨 AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
     );
 
-    // Show dialog to user
     if (mounted) {
       _showAutoClockOutDialog(distance);
     }
 
-    // Perform clock out
-    await _performClockOut(isAutomatic: true);
+    await _performClockOut(isAutomatic: true, distance: distance);
+  }
+
+  Future<void> _updateGeofenceStatus() async {
+    if (!(_autoClockOutService?.isMonitoring ?? false)) return;
+
+    final status = await _autoClockOutService?.checkNow();
+    if (status != null && status['distance'] != null && mounted) {
+      setState(() {
+        _currentUserLat = status['userLat'];
+        _currentUserLng = status['userLng'];
+        _lastDistance = status['distance'];
+        _lastViolationCount = status['violationCount'];
+      });
+    }
   }
 
   void _showAutoClockOutDialog(double distance) {
@@ -152,10 +178,12 @@ class _HomePageState extends State<HomePage> {
 
   void _startTimers() {
     _updateDateTime();
-    _timer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => _updateDateTime(),
-    );
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _updateDateTime();
+      if (_isClockedIn && (_autoClockOutService?.isMonitoring ?? false)) {
+        _updateGeofenceStatus();
+      }
+    });
   }
 
   void _updateDateTime() {
@@ -280,7 +308,7 @@ class _HomePageState extends State<HomePage> {
     // Using your current location as the "client site"
     // Walk 500m away to trigger auto clock out
     // ============================================================
-    const bool testMode = true; // Set to false to disable test mode
+    const bool testMode = false; // ✅ DISABLED FOR PRODUCTION
 
     if (testMode) {
       if (_latitude == null || _longitude == null) {
@@ -358,6 +386,68 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// Start background tracking for auto clock-out when app is closed
+  Future<void> _startBackgroundTracking() async {
+    try {
+      // Request notification permission
+      final notificationGranted =
+          await NotificationService.requestPermissions();
+      if (!notificationGranted) {
+        debugPrint('⚠️ Notification permission denied');
+        // Continue anyway, background tracking will still work
+      }
+
+      // Get target location (same logic as foreground geofence)
+      double? targetLat;
+      double? targetLng;
+      String? targetAddress;
+
+      // Use test mode if enabled
+      const bool testMode = false;
+      if (testMode && _latitude != null && _longitude != null) {
+        targetLat = _latitude;
+        targetLng = _longitude;
+        targetAddress = "Test Location - Your Current Position";
+      } else if (_selectedClient != null && _selectedClient!.isNotEmpty) {
+        // Find client from list
+        try {
+          final client = _clients.firstWhere(
+            (c) => c['CLIENT_GUID'] == _selectedClient,
+          );
+          final locationData = client['LOCATION_DATA'] as List<dynamic>?;
+          if (locationData != null && locationData.isNotEmpty) {
+            final location = locationData[0];
+            targetLat = (location['LATITUDE'] as num?)?.toDouble();
+            targetLng = (location['LONGITUDE'] as num?)?.toDouble();
+            targetAddress = location['ADDRESS'] as String?;
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error getting client location: $e');
+        }
+      }
+
+      if (targetLat == null || targetLng == null || _clockRefGuid == null) {
+        debugPrint(
+          '⚠️ Cannot start background tracking: missing location or clockRefGuid',
+        );
+        return;
+      }
+
+      // Start background tracking
+      await BackgroundGeofenceService.startTracking(
+        targetLat: targetLat,
+        targetLng: targetLng,
+        targetAddress: targetAddress ?? 'Work Location',
+        radiusInMeters: 500.0, // Same as foreground
+        clockRefGuid: _clockRefGuid!,
+      );
+
+      debugPrint('✅ Background tracking started');
+    } catch (e) {
+      debugPrint('❌ Error starting background tracking: $e');
+    }
+  }
+
   // ===================== CLOCK IN/OUT =====================
 
   Future<void> _handleClockAction() async {
@@ -422,20 +512,31 @@ class _HomePageState extends State<HomePage> {
       // ✨ START GEOFENCE MONITORING AFTER CLOCK IN
       _startGeofenceMonitoringForClient(_selectedClient);
 
+      // ✨ REQUEST NOTIFICATION PERMISSION AND START BACKGROUND TRACKING
+      await _startBackgroundTracking();
+
       _showSuccessDialog('Clock In Successful', 'Time: ${result['clockTime']}');
     } else {
       _showDialog('Error', result['message'] ?? 'Clock in failed');
     }
   }
 
-  Future<void> _performClockOut({bool isAutomatic = false}) async {
+  Future<void> _performClockOut({
+    bool isAutomatic = false,
+    double? distance,
+  }) async {
     if (_clockRefGuid == null) {
       _showDialog('Error', 'No clock in record found');
       return;
     }
 
-    // ✨ FIX: Safe null check
+    // ✨ STOP FOREGROUND AND BACKGROUND MONITORING
     _autoClockOutService?.stopMonitoring();
+    try {
+      await BackgroundGeofenceService.stopTracking();
+    } catch (e) {
+      debugPrint('⚠️ Error stopping background tracking: $e');
+    }
 
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final userGuid = auth.userInfo?['userId'] ?? '';
@@ -462,6 +563,12 @@ class _HomePageState extends State<HomePage> {
         _showSuccessDialog(
           'Clock Out Successful',
           'In: $_clockInTime\nOut: ${result['clockTime']}',
+        );
+      } else {
+        // Show persistent notification for auto clock-out
+        await NotificationService.showAutoClockOutNotification(
+          distance: distance ?? 0.0,
+          location: _currentAddress ?? 'Work Location',
         );
       }
 
@@ -575,6 +682,22 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       drawer: const AppDrawer(),
+      bottomNavigationBar: AppBottomNav(
+        currentIndex: _currentIndex,
+        onTap: (index) {
+          setState(() {
+            _currentIndex = index;
+          });
+
+          if (index == 1) {
+            // Navigate to history page
+            Navigator.pushNamed(context, '/history');
+          } else if (index == 2) {
+            // Navigate to profile page
+            Navigator.pushNamed(context, '/profile');
+          }
+        },
+      ),
       body: RefreshIndicator(
         onRefresh: _initializeData,
         child: SingleChildScrollView(
@@ -610,33 +733,82 @@ class _HomePageState extends State<HomePage> {
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: Colors.blue.shade200),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.radar, color: Colors.blue),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Geofence Active',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.blue,
-                  ),
+          Row(
+            children: [
+              const Icon(Icons.radar, color: Colors.blue),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Geofence Active',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                      ),
+                    ),
+                    Text(
+                      'Monitoring: ${_autoClockOutService?.targetAddress ?? 'Work Location'}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const Text(
+                      'Auto clock-out if you move >500m away',
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
                 ),
-                Text(
-                  'Monitoring: ${_autoClockOutService?.targetAddress ?? 'Work Location'}',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const Text(
-                  'Auto clock-out if you move >500m away',
-                  style: TextStyle(fontSize: 11, color: Colors.grey),
-                ),
-              ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const Divider(height: 1),
+          const SizedBox(height: 12),
+          // Debug info section
+          Text(
+            'Debug Info:',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: Colors.grey.shade600,
             ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Your Location: ${_currentUserLat?.toStringAsFixed(6) ?? 'N/A'}, ${_currentUserLng?.toStringAsFixed(6) ?? 'N/A'}',
+            style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          Text(
+            'Target: ${_autoClockOutService?.targetLat?.toStringAsFixed(6) ?? 'N/A'}, ${_autoClockOutService?.targetLng?.toStringAsFixed(6) ?? 'N/A'}',
+            style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          Text(
+            'Distance: ${_lastDistance?.toStringAsFixed(2) ?? 'N/A'}m (Radius: ${_autoClockOutService?.radiusInMeters.toStringAsFixed(1) ?? 'N/A'}m)',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              color:
+                  (_lastDistance ?? 0) >
+                      (_autoClockOutService?.radiusInMeters ?? 0)
+                  ? Colors.red
+                  : Colors.green,
+            ),
+          ),
+          Text(
+            'Violation Count: ${_lastViolationCount ?? 0}',
+            style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
           ),
         ],
       ),

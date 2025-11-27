@@ -156,8 +156,8 @@ class _LoginPageState extends State<LoginPage> {
                           if (result['success']) {
                             // store access_token:
                             String token = result['data']['access_token'];
-                            // Store token in Provider
-                            Provider.of<AuthProvider>(
+                            // Store token in Provider (now async)
+                            await Provider.of<AuthProvider>(
                               context,
                               listen: false,
                             ).setToken(token);
@@ -167,7 +167,7 @@ class _LoginPageState extends State<LoginPage> {
                               context,
                             );
                             if (userInfo['success']) {
-                              Provider.of<AuthProvider>(
+                              await Provider.of<AuthProvider>(
                                 context,
                                 listen: false,
                               ).setUserInfo(userInfo['data']);

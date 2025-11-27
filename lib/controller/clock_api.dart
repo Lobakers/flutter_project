@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:beewhere/controller/api_service.dart';
+import 'package:beewhere/services/logger_service.dart';
 import 'package:flutter/material.dart';
 import 'package:beewhere/routes/api.dart';
 
@@ -39,19 +40,23 @@ class ClockApi {
         "activity": {"name": activityName ?? "", "statusFlag": "true"},
       };
 
-      debugPrint('🔵 ClockIn Request:');
-      debugPrint('   URL: ${Api.clock}');
-      debugPrint('   Body: ${jsonEncode(body)}');
+      LoggerService.info('ClockIn Request: ${Api.clock}', tag: 'ClockApi');
+      LoggerService.debug('ClockIn Body: ${jsonEncode(body)}', tag: 'ClockApi');
 
       final response = await ApiService.post(context, Api.clock, body);
 
-      debugPrint('🔵 ClockIn Response:');
-      debugPrint('   Status: ${response.statusCode}');
-      debugPrint('   Body: ${response.body}');
+      LoggerService.info(
+        'ClockIn Response: ${response.statusCode}',
+        tag: 'ClockApi',
+      );
+      LoggerService.debug(
+        'ClockIn Response Body: ${response.body}',
+        tag: 'ClockApi',
+      );
 
       if (response.statusCode == 201) {
         final data = jsonDecode(response.body);
-        debugPrint('✅ ClockIn Success: $data');
+        LoggerService.info('ClockIn Success', tag: 'ClockApi');
 
         return {
           "success": true,
@@ -59,14 +64,22 @@ class ClockApi {
           "clockTime": data[0]['CLOCK_TIME'],
         };
       } else {
-        debugPrint('❌ ClockIn Failed: Status ${response.statusCode}');
+        LoggerService.error(
+          'ClockIn Failed: Status ${response.statusCode}',
+          tag: 'ClockApi',
+        );
         return {
           "success": false,
           "message": "Clock in failed: ${response.body}",
         };
       }
-    } catch (e) {
-      debugPrint('❌ ClockIn Exception: $e');
+    } catch (e, stackTrace) {
+      LoggerService.error(
+        'ClockIn Exception',
+        tag: 'ClockApi',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return {"success": false, "message": "Network error: $e"};
     }
   }
@@ -108,30 +121,45 @@ class ClockApi {
         "clockRefGuid": clockRefGuid,
       };
 
-      debugPrint('🔴 ClockOut Request:');
-      debugPrint('   URL: ${Api.clock}');
-      debugPrint('   Body: ${jsonEncode(body)}');
+      LoggerService.info('ClockOut Request: ${Api.clock}', tag: 'ClockApi');
+      LoggerService.debug(
+        'ClockOut Body: ${jsonEncode(body)}',
+        tag: 'ClockApi',
+      );
 
       final response = await ApiService.post(context, Api.clock, body);
 
-      debugPrint('🔴 ClockOut Response:');
-      debugPrint('   Status: ${response.statusCode}');
-      debugPrint('   Body: ${response.body}');
+      LoggerService.info(
+        'ClockOut Response: ${response.statusCode}',
+        tag: 'ClockApi',
+      );
+      LoggerService.debug(
+        'ClockOut Response Body: ${response.body}',
+        tag: 'ClockApi',
+      );
 
       if (response.statusCode == 201) {
         final data = jsonDecode(response.body);
-        debugPrint('✅ ClockOut Success: $data');
+        LoggerService.info('ClockOut Success', tag: 'ClockApi');
 
         return {"success": true, "clockTime": data[0]['CLOCK_TIME']};
       } else {
-        debugPrint('❌ ClockOut Failed: Status ${response.statusCode}');
+        LoggerService.error(
+          'ClockOut Failed: Status ${response.statusCode}',
+          tag: 'ClockApi',
+        );
         return {
           "success": false,
           "message": "Clock out failed: ${response.body}",
         };
       }
-    } catch (e) {
-      debugPrint('❌ ClockOut Exception: $e');
+    } catch (e, stackTrace) {
+      LoggerService.error(
+        'ClockOut Exception',
+        tag: 'ClockApi',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return {"success": false, "message": "Network error: $e"};
     }
   }
@@ -141,32 +169,42 @@ class ClockApi {
     BuildContext context,
   ) async {
     try {
-      debugPrint('📋 GetLatestClock Request: ${Api.clock_beewhere}');
+      LoggerService.info(
+        'GetLatestClock Request: ${Api.clock_beewhere}',
+        tag: 'ClockApi',
+      );
 
       final response = await ApiService.get(context, Api.clock_beewhere);
 
-      debugPrint('📋 GetLatestClock Response:');
-      debugPrint('   Status: ${response.statusCode}');
-      debugPrint('   Body: ${response.body}');
+      LoggerService.info(
+        'GetLatestClock Response: ${response.statusCode}',
+        tag: 'ClockApi',
+      );
+      LoggerService.debug(
+        'GetLatestClock Response Body: ${response.body}',
+        tag: 'ClockApi',
+      );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        debugPrint('📋 Parsed data type: ${data.runtimeType}');
-        debugPrint('📋 Parsed data: $data');
+        LoggerService.debug(
+          'Parsed data type: ${data.runtimeType}',
+          tag: 'ClockApi',
+        );
 
         if (data.isEmpty) {
-          debugPrint('ℹ️ No clock records found');
+          LoggerService.info('No clock records found', tag: 'ClockApi');
           return {"success": true, "isClockedIn": false};
         }
 
-        debugPrint('📋 Data is list: ${data is List}');
-        debugPrint('📋 Data length: ${data is List ? data.length : 'N/A'}');
+        LoggerService.debug(
+          'Data is list: ${data is List}, length: ${data is List ? data.length : 'N/A'}',
+          tag: 'ClockApi',
+        );
 
         final latest = data[0];
-        debugPrint('📋 Latest record: $latest');
-
         final clockType = latest['CLOCK_TYPE'];
-        debugPrint('📋 Clock type: $clockType');
+        LoggerService.debug('Latest clock type: $clockType', tag: 'ClockApi');
 
         return {
           "success": true,
@@ -181,12 +219,19 @@ class ClockApi {
           "activityName": "", // 👈 FIXED: ACTIVITY is XML string, not object
         };
       } else {
-        debugPrint('❌ GetLatestClock Failed: Status ${response.statusCode}');
+        LoggerService.error(
+          'GetLatestClock Failed: Status ${response.statusCode}',
+          tag: 'ClockApi',
+        );
         return {"success": false, "message": "Failed to get clock status"};
       }
     } catch (e, stackTrace) {
-      debugPrint('❌ GetLatestClock Exception: $e');
-      debugPrint('Stack trace: $stackTrace');
+      LoggerService.error(
+        'GetLatestClock Exception',
+        tag: 'ClockApi',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return {"success": false, "message": "Network error: $e"};
     }
   }
