@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:beewhere/controller/client_detail_api.dart';
 import 'package:beewhere/controller/project_api.dart';
 import 'package:beewhere/controller/contract_api.dart';
-import 'package:beewhere/controller/coordinate_api.dart';
+
 import 'package:beewhere/controller/attendance_profile_api.dart';
 import 'package:beewhere/controller/clock_api.dart';
 import 'package:beewhere/controller/auto_clockout_service.dart';
@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:slide_to_act/slide_to_act.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -28,7 +29,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   // Location state
-  String _currentAddress = "Tap to get location";
+  String _currentAddress = "Tap to get location"; // Now stores coordinates
   bool _isLoading = false;
   double? _latitude;
   double? _longitude;
@@ -286,12 +287,10 @@ class _HomePageState extends State<HomePage> {
       debugPrint('   const double testLng = $_longitude;');
       debugPrint('═══════════════════════════════════════════');
 
-      final address = await CoordinateApi.getAddressFromCoordinates(
-        context,
-        _latitude!,
-        _longitude!,
-      );
-      if (mounted) setState(() => _currentAddress = address);
+      // Display coordinates instead of address to save geocoding API costs
+      final coordinates =
+          '${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}';
+      if (mounted) setState(() => _currentAddress = coordinates);
     } catch (e) {
       debugPrint('Location error: $e');
       if (mounted) setState(() => _currentAddress = "Failed to get location");
@@ -1088,24 +1087,26 @@ class _HomePageState extends State<HomePage> {
   Widget _buildClockButton() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: SizedBox(
-        width: double.infinity,
-        height: 50,
-        child: ElevatedButton(
-          onPressed: _handleClockAction,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: _isClockedIn
-                ? Colors.red
-                : const Color(0xFF2DD36F),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-          child: Text(
-            _isClockedIn ? 'Clock Out' : 'Clock In',
-            style: const TextStyle(color: Colors.white, fontSize: 16),
-          ),
+      child: SlideAction(
+        height: 60,
+        sliderButtonIconSize: 20,
+        sliderButtonIconPadding: 14,
+        innerColor: Colors.white,
+        outerColor: _isClockedIn ? Colors.red : const Color(0xFF2DD36F),
+        sliderButtonIcon: Icon(
+          _isClockedIn ? Icons.logout : Icons.login,
+          color: _isClockedIn ? Colors.red : const Color(0xFF2DD36F),
         ),
+        text: _isClockedIn ? 'Slide to Clock Out' : 'Slide to Clock In',
+        textStyle: const TextStyle(
+          color: Colors.white,
+          fontSize: 16,
+          fontWeight: FontWeight.w500,
+        ),
+        onSubmit: () async {
+          await _handleClockAction();
+          return null; // Return null to reset slider
+        },
       ),
     );
   }

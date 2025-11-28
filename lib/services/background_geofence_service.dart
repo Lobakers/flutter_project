@@ -7,7 +7,7 @@ import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/services/storage_service.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
+
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:http/http.dart' as http;
 
@@ -255,24 +255,9 @@ class GeofenceTaskHandler extends TaskHandler {
         timeLimit: const Duration(seconds: 10),
       );
 
-      // Get address from coordinates
-      String address = location;
-      try {
-        final placemarks = await placemarkFromCoordinates(
-          position.latitude,
-          position.longitude,
-        );
-        if (placemarks.isNotEmpty) {
-          final placemark = placemarks.first;
-          address =
-              '${placemark.street}, ${placemark.locality}, ${placemark.country}';
-        }
-      } catch (e) {
-        LoggerService.warning(
-          'Failed to get address: $e',
-          tag: 'GeofenceTaskHandler',
-        );
-      }
+      // Use coordinates instead of address to save geocoding API costs
+      String address =
+          'Lat: ${position.latitude.toStringAsFixed(6)}, Long: ${position.longitude.toStringAsFixed(6)}';
 
       // Get device info
       String deviceDescription = 'Unknown Device';
