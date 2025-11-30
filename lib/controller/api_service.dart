@@ -35,4 +35,22 @@ class ApiService {
       body: jsonEncode(body),
     );
   }
+
+  static Future<http.Response> patch(
+    BuildContext context,
+    String url,
+    Map<String, dynamic> body,
+  ) async {
+    final token = Provider.of<AuthProvider>(context, listen: false).token;
+
+    return await http.patch(
+      Uri.parse(url),
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        if (token != null) 'Authorization': 'JWT $token',
+      },
+      body: jsonEncode(body),
+    );
+  }
 }

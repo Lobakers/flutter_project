@@ -1,6 +1,8 @@
 class Api {
   static const String system = 'https://devauth.beesuite.app/api';
   static const String devamscore = 'https://devamscore.beesuite.app/api';
+  static const String baseUrl =
+      'https://devamscore.beesuite.app'; // Base without /api
 
   static const String login = system + '/auth/login';
   static const String user_info = devamscore + '/user-info';
@@ -14,4 +16,10 @@ class Api {
   static const String clock = devamscore + "/clock/transaction";
   static const String clock_beewhere = devamscore + "/clock/beewhere/latest";
   static const String report = devamscore + "/clock/history-list";
+  static const String clock_detail =
+      devamscore + "/clock"; // GET /clock/{clockGuid}
+  static const String clock_activity = devamscore + "/clock/activity"; // PATCH
+  static const String support = baseUrl + "/support"; // POST (no /api prefix!)
+  static const String azure_upload =
+      devamscore + "/azure/upload"; // POST file upload
 }

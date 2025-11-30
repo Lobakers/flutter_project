@@ -1,5 +1,7 @@
 import 'package:beewhere/controller/history_api.dart';
 import 'package:beewhere/theme/color_theme.dart';
+import 'package:beewhere/widgets/edit_activity_dialog.dart';
+import 'package:beewhere/widgets/edit_time_request_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -152,6 +154,47 @@ class _HistoryPageState extends State<HistoryPage> {
         _endDate = picked.end;
       });
       _loadHistory();
+    }
+  }
+
+  Future<void> _showEditActivityDialog(Map<String, dynamic> record) async {
+    final clockGuid = record['CLOCK_LOG_GUID'] ?? record['clockLogGuid'];
+    if (clockGuid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cannot edit: missing clock ID')),
+      );
+      return;
+    }
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => EditActivityDialog(clockGuid: clockGuid),
+    );
+
+    if (result == true) {
+      _loadHistory(); // Refresh to show updates
+    }
+  }
+
+  Future<void> _showEditTimeDialog(Map<String, dynamic> record) async {
+    final clockGuid = record['CLOCK_LOG_GUID'] ?? record['clockLogGuid'];
+    if (clockGuid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cannot edit: missing clock ID')),
+      );
+      return;
+    }
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => EditTimeRequestDialog(clockGuid: clockGuid),
+    );
+
+    if (result == true) {
+      // Optionally refresh
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Your request has been submitted')),
+      );
     }
   }
 
@@ -448,6 +491,40 @@ class _HistoryPageState extends State<HistoryPage> {
                     style: const TextStyle(fontSize: 12, color: Colors.grey),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+
+            // Action Buttons
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _showEditActivityDialog(record),
+                    icon: const Icon(Icons.playlist_add_check, size: 16),
+                    label: const Text(
+                      'Edit Activity',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _showEditTimeDialog(record),
+                    icon: const Icon(Icons.edit_calendar, size: 16),
+                    label: const Text(
+                      'Edit Time',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                    ),
                   ),
                 ),
               ],

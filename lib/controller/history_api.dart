@@ -77,4 +77,105 @@ class HistoryApi {
 
     return totalHours;
   }
+
+  /// Get clock detail by GUID
+  static Future<Map<String, dynamic>> getClockDetail(
+    BuildContext context,
+    String clockGuid,
+  ) async {
+    try {
+      final url = '${Api.clock_detail}/$clockGuid';
+      debugPrint('📋 GetClockDetail Request: $url');
+
+      final response = await ApiService.get(context, url);
+
+      debugPrint('📋 GetClockDetail Response: ${response.statusCode}');
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        debugPrint('✅ GetClockDetail Success');
+        return {'success': true, 'data': data};
+      } else {
+        debugPrint('❌ GetClockDetail Failed: ${response.statusCode}');
+        return {'success': false, 'message': 'Failed to fetch clock details'};
+      }
+    } catch (e) {
+      debugPrint('❌ GetClockDetail Exception: $e');
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  /// Update activity for a clock record
+  static Future<Map<String, dynamic>> updateActivity(
+    BuildContext context,
+    String clockLogGuid,
+    List<Map<String, dynamic>> activities,
+  ) async {
+    try {
+      final url = Api.clock_activity;
+      final payload = {'clockLogGuid': clockLogGuid, 'activity': activities};
+
+      debugPrint('📋 UpdateActivity Request: $url');
+      debugPrint('   Payload: ${jsonEncode(payload)}');
+
+      final response = await ApiService.patch(context, url, payload);
+
+      debugPrint('📋 UpdateActivity Response: ${response.statusCode}');
+      debugPrint('   Response Body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        debugPrint('✅ UpdateActivity Success');
+        return {'success': true, 'message': 'Activity updated successfully'};
+      } else {
+        debugPrint('❌ UpdateActivity Failed: ${response.statusCode}');
+        return {'success': false, 'message': 'Failed to update activity'};
+      }
+    } catch (e) {
+      debugPrint('❌ UpdateActivity Exception: $e');
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  /// Submit time change request
+  static Future<Map<String, dynamic>> submitTimeRequest(
+    BuildContext context, {
+    required String userGuid,
+    required String userEmail,
+    required int startTime,
+    required int endTime,
+    required String description,
+    String? supportingDoc,
+  }) async {
+    try {
+      final url = Api.support;
+      final payload = {
+        'requestType': 'clocks',
+        'subject': 'Wrong clock out time',
+        'starttime': startTime,
+        'endtime': endTime,
+        'supportingDoc': supportingDoc ?? '',
+        'description': description,
+        'userGuid': userGuid,
+        'userEmail': userEmail,
+      };
+
+      debugPrint('📋 SubmitTimeRequest Request: $url');
+      debugPrint('   Payload: ${jsonEncode(payload)}');
+
+      final response = await ApiService.post(context, url, payload);
+
+      debugPrint('📋 SubmitTimeRequest Response: ${response.statusCode}');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        debugPrint('✅ SubmitTimeRequest Success');
+        return {'success': true, 'message': 'Request submitted successfully'};
+      } else {
+        debugPrint('❌ SubmitTimeRequest Failed: ${response.statusCode}');
+        return {'success': false, 'message': 'Failed to submit request'};
+      }
+    } catch (e) {
+      debugPrint('❌ SubmitTimeRequest Exception: $e');
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
 }
