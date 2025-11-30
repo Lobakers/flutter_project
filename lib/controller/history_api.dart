@@ -11,18 +11,13 @@ class HistoryApi {
     BuildContext context, {
     String? startDate,
     String? endDate,
+    int limit = 5,
+    int page = 1,
   }) async {
     try {
       // Build query parameters
-      String url = Api.report;
-      
-      final queryParams = <String>[];
-      if (startDate != null) queryParams.add('startDate=$startDate');
-      if (endDate != null) queryParams.add('endDate=$endDate');
-      
-      if (queryParams.isNotEmpty) {
-        url += '?${queryParams.join('&')}';
-      }
+      // API: /clock/history-list/{limit}/{page}/{type}
+      String url = '${Api.report}/$limit/$page/all';
 
       debugPrint('📋 GetAttendanceHistory Request: $url');
 
@@ -34,7 +29,7 @@ class HistoryApi {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        
+
         // Handle both array and object responses
         List<dynamic> records = [];
         if (data is List) {
@@ -45,13 +40,11 @@ class HistoryApi {
 
         debugPrint('✅ GetAttendanceHistory Success: ${records.length} records');
 
-        return {
-          'success': true,
-          'data': records,
-          'count': records.length,
-        };
+        return {'success': true, 'data': records, 'count': records.length};
       } else {
-        debugPrint('❌ GetAttendanceHistory Failed: Status ${response.statusCode}');
+        debugPrint(
+          '❌ GetAttendanceHistory Failed: Status ${response.statusCode}',
+        );
         return {
           'success': false,
           'message': 'Failed to fetch attendance history',
@@ -61,18 +54,14 @@ class HistoryApi {
     } catch (e, stackTrace) {
       debugPrint('❌ GetAttendanceHistory Exception: $e');
       debugPrint('Stack trace: $stackTrace');
-      return {
-        'success': false,
-        'message': 'Network error: $e',
-        'data': [],
-      };
+      return {'success': false, 'message': 'Network error: $e', 'data': []};
     }
   }
 
   /// Calculate total hours worked from records
   static double calculateTotalHours(List<dynamic> records) {
     double totalHours = 0.0;
-    
+
     for (var record in records) {
       if (record['CLOCK_IN_TIME'] != null && record['CLOCK_OUT_TIME'] != null) {
         try {
@@ -85,7 +74,7 @@ class HistoryApi {
         }
       }
     }
-    
+
     return totalHours;
   }
 }

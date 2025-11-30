@@ -13,8 +13,15 @@ class HistoryPage extends StatefulWidget {
 class _HistoryPageState extends State<HistoryPage> {
   List<dynamic> _records = [];
   bool _isLoading = false;
+  bool _isLoadingMore = false;
   String? _errorMessage;
   double _totalHours = 0.0;
+
+  // Pagination
+  final ScrollController _scrollController = ScrollController();
+  int _currentPage = 1;
+  final int _limit = 5;
+  bool _hasMore = true;
 
   // Date range filter
   DateTime? _startDate;
@@ -26,7 +33,25 @@ class _HistoryPageState extends State<HistoryPage> {
     // Set default date range (last 30 days)
     _endDate = DateTime.now();
     _startDate = _endDate!.subtract(const Duration(days: 30));
+
+    _scrollController.addListener(_onScroll);
     _loadHistory();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 200 &&
+        !_isLoading &&
+        !_isLoadingMore &&
+        _hasMore) {
+      _loadMoreHistory();
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -34,8 +59,25 @@ class _HistoryPageState extends State<HistoryPage> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _currentPage = 1;
+      _records = [];
+      _hasMore = true;
     });
 
+    await _fetchHistoryData();
+  }
+
+  Future<void> _loadMoreHistory() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoadingMore = true;
+      _currentPage++;
+    });
+
+    await _fetchHistoryData(isLoadMore: true);
+  }
+
+  Future<void> _fetchHistoryData({bool isLoadMore = false}) async {
     try {
       final startDateStr = _startDate != null
           ? DateFormat('yyyy-MM-dd').format(_startDate!)
@@ -48,27 +90,46 @@ class _HistoryPageState extends State<HistoryPage> {
         context,
         startDate: startDateStr,
         endDate: endDateStr,
+        limit: _limit,
+        page: _currentPage,
       );
 
       if (mounted) {
         if (result['success']) {
+          final newRecords = result['data'] as List<dynamic>;
+
           setState(() {
-            _records = result['data'] as List<dynamic>;
+            if (isLoadMore) {
+              _records.addAll(newRecords);
+            } else {
+              _records = newRecords;
+            }
+
+            // Relaxed check: If we got ANY records, try fetching more.
+            // Only stop if we get 0 records.
+            _hasMore = newRecords.isNotEmpty;
             _totalHours = HistoryApi.calculateTotalHours(_records);
             _isLoading = false;
+            _isLoadingMore = false;
           });
         } else {
           setState(() {
-            _errorMessage = result['message'] ?? 'Failed to load history';
+            if (!isLoadMore) {
+              _errorMessage = result['message'] ?? 'Failed to load history';
+            }
             _isLoading = false;
+            _isLoadingMore = false;
           });
         }
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Error loading history: $e';
+          if (!isLoadMore) {
+            _errorMessage = 'Error loading history: $e';
+          }
           _isLoading = false;
+          _isLoadingMore = false;
         });
       }
     }
@@ -214,9 +275,18 @@ class _HistoryPageState extends State<HistoryPage> {
     return RefreshIndicator(
       onRefresh: _loadHistory,
       child: ListView.builder(
+        controller: _scrollController,
         padding: const EdgeInsets.all(15),
-        itemCount: _records.length,
+        itemCount: _records.length + (_isLoadingMore ? 1 : 0),
         itemBuilder: (context, index) {
+          if (index == _records.length) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(10.0),
+                child: CircularProgressIndicator(),
+              ),
+            );
+          }
           final record = _records[index];
           return _buildHistoryCard(record);
         },
@@ -228,7 +298,8 @@ class _HistoryPageState extends State<HistoryPage> {
     final clockInTime = record['CLOCK_IN_TIME'] ?? '';
     final clockOutTime = record['CLOCK_OUT_TIME'] ?? '';
     final jobType = record['JOB_TYPE'] ?? 'Unknown';
-    final address = record['ADDRESS'] ?? 'No address';
+    final address =
+        record['ADDRESS_IN'] ?? record['ADDRESS_OUT'] ?? 'No address';
     final clientName = record['CLIENT_NAME'] ?? '';
 
     // Calculate duration

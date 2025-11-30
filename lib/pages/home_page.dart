@@ -5,6 +5,7 @@ import 'package:beewhere/controller/contract_api.dart';
 
 import 'package:beewhere/controller/attendance_profile_api.dart';
 import 'package:beewhere/controller/clock_api.dart';
+import 'package:beewhere/controller/geofence_helper.dart';
 import 'package:beewhere/controller/auto_clockout_service.dart';
 import 'package:beewhere/services/background_geofence_service.dart';
 import 'package:beewhere/services/notification_service.dart';
@@ -83,7 +84,7 @@ class _HomePageState extends State<HomePage> {
     // ✨ FIX: Initialize here safely
     _autoClockOutService = AutoClockOutService(
       checkInterval: const Duration(seconds: 15),
-      radiusInMeters: 3.0,
+      radiusInMeters: 250.0,
       // radiusInMeters: 10.0, //testing purpose
       onLeaveGeofence: _onUserLeftGeofence,
     );
@@ -301,83 +302,71 @@ class _HomePageState extends State<HomePage> {
 
   // ===================== GEOFENCE =====================
 
-  void _startGeofenceMonitoringForClient(String? clientGuid) {
-    // ============================================================
-    // 🧪 TEST MODE - COMMENT OUT THIS BLOCK AFTER TESTING
-    // Using your current location as the "client site"
-    // Walk 500m away to trigger auto clock out
-    // ============================================================
-    const bool testMode = false; // ✅ DISABLED FOR PRODUCTION
+  /// Filter clients to show only those within 250m of current location
+  List<dynamic> _getNearbyClients() {
+    if (_latitude == null || _longitude == null) {
+      debugPrint(
+        '⚠️ No location available, showing all ${_clients.length} clients',
+      );
+      return _clients; // Return all if no location
+    }
 
-    if (testMode) {
-      if (_latitude == null || _longitude == null) {
-        debugPrint('⚠️ TEST MODE: No current location yet!');
-        return;
+    final nearbyClients = _clients.where((client) {
+      final locationData = client['LOCATION_DATA'] as List<dynamic>?;
+      if (locationData == null || locationData.isEmpty) {
+        return false; // Exclude clients without location
       }
 
-      final double testLat = _latitude!; // 👈 Uses YOUR current GPS!
-      final double testLng = _longitude!; // 👈 Uses YOUR current GPS!
-      const String testAddress = "Test Location - Your Current Position";
+      final location = locationData[0];
+      final clientLat = (location['LATITUDE'] as num?)?.toDouble();
+      final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
 
-      debugPrint('🧪 TEST MODE ACTIVE');
-      debugPrint('🎯 Using YOUR CURRENT location as target:');
-      debugPrint('   Lat: $testLat');
-      debugPrint('   Lng: $testLng');
-      debugPrint('📍 Walk 500m away to trigger auto clock out');
+      if (clientLat == null || clientLng == null) {
+        return false; // Exclude clients with invalid coordinates
+      }
 
-      _autoClockOutService?.startMonitoring(
-        targetLat: testLat,
-        targetLng: testLng,
-        targetAddress: testAddress,
+      // Calculate distance
+      final distance = GeofenceHelper.calculateDistance(
+        _latitude!,
+        _longitude!,
+        clientLat,
+        clientLng,
       );
-      return;
-    }
-    // ============================================================
-    // 🧪 END TEST MODE
-    // ============================================================
 
-    if (clientGuid == null || clientGuid.isEmpty) {
-      debugPrint('⚠️ No client selected, skipping geofence');
-      return;
-    }
+      final isNearby = distance <= 10000.0;
+      if (isNearby) {
+        debugPrint(
+          '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',
+        );
+      }
 
-    // Find client from list
-    dynamic client;
-    try {
-      client = _clients.firstWhere((c) => c['CLIENT_GUID'] == clientGuid);
-    } catch (e) {
-      debugPrint('⚠️ Client not found in list');
-      return;
-    }
+      return isNearby; // Only include clients within 250m
+    }).toList();
 
-    if (client == null) {
-      debugPrint('⚠️ Client is null');
-      return;
-    }
+    debugPrint(
+      '📍 Found ${nearbyClients.length} clients within 250m (out of ${_clients.length} total)',
+    );
+    return nearbyClients;
+  }
 
-    // Get location data
-    final locationData = client['LOCATION_DATA'] as List<dynamic>?;
-    if (locationData == null || locationData.isEmpty) {
-      debugPrint('⚠️ No location data for client: ${client['NAME']}');
-      return;
-    }
-
-    // Use first location
-    final location = locationData[0];
-    final targetLat = (location['LATITUDE'] as num?)?.toDouble();
-    final targetLng = (location['LONGITUDE'] as num?)?.toDouble();
-    final targetAddress = location['ADDRESS'] as String?;
+  void _startGeofenceMonitoringForClient(String? clientGuid) {
+    // Use user's current location as geofence center (where they clocked in)
+    // This way, auto clock-out triggers when they move 500m from their clock-in position
+    final targetLat = _latitude;
+    final targetLng = _longitude;
+    final targetAddress = _currentAddress;
 
     if (targetLat == null || targetLng == null) {
-      debugPrint('⚠️ Invalid lat/lng for client');
+      debugPrint('⚠️ No current location available');
       return;
     }
 
-    debugPrint('🎯 Starting geofence for: ${client['NAME']}');
-    debugPrint('   Location: $targetLat, $targetLng');
-    debugPrint('   Address: $targetAddress');
+    debugPrint('🎯 Starting geofence monitoring');
+    debugPrint('   Target: $targetLat, $targetLng');
+    debugPrint('   Radius: 500.0m');
+    debugPrint('   Check interval: 15s');
+    debugPrint('   Required violations: 2');
 
-    // ✨ FIX: Safe null check
     _autoClockOutService?.startMonitoring(
       targetLat: targetLat,
       targetLng: targetLng,
@@ -397,9 +386,10 @@ class _HomePageState extends State<HomePage> {
       }
 
       // Get target location (same logic as foreground geofence)
-      double? targetLat;
-      double? targetLng;
-      String? targetAddress;
+      // Use user's current location as geofence center (where they clocked in)
+      double? targetLat = _latitude;
+      double? targetLng = _longitude;
+      String? targetAddress = _currentAddress;
 
       // Use test mode if enabled
       const bool testMode = false;
@@ -1001,7 +991,7 @@ class _HomePageState extends State<HomePage> {
           if (_fieldVisibility['client'] == true)
             _buildDropdown(
               'Client',
-              _clients,
+              _getNearbyClients(), // Use filtered list
               _selectedClient,
               'CLIENT_GUID',
               'NAME',

@@ -13,5 +13,5 @@ class Api {
       devamscore + "/admin/attendance/user";
   static const String clock = devamscore + "/clock/transaction";
   static const String clock_beewhere = devamscore + "/clock/beewhere/latest";
-  static const String report = devamscore + "/clock/history/attendance";
+  static const String report = devamscore + "/clock/history-list";
 }
