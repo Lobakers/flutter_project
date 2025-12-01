@@ -674,17 +674,17 @@ class _HomePageState extends State<HomePage> {
       bottomNavigationBar: AppBottomNav(
         currentIndex: _currentIndex,
         onTap: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
-
           if (index == 1) {
             // Navigate to history page
-            Navigator.pushNamed(context, '/history');
+            Navigator.pushReplacementNamed(context, '/history');
           } else if (index == 2) {
             // Navigate to profile page
-            Navigator.pushNamed(context, '/profile');
+            Navigator.pushReplacementNamed(context, '/profile');
+          } else if (index == 3) {
+            // Navigate to report page
+            Navigator.pushReplacementNamed(context, '/report');
           }
+          // If index == 0 (Home), do nothing as we're already here
         },
       ),
       body: RefreshIndicator(

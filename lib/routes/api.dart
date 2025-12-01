@@ -22,4 +22,6 @@ class Api {
   static const String support = baseUrl + "/support"; // POST (no /api prefix!)
   static const String azure_upload =
       devamscore + "/azure/upload"; // POST file upload
+  static const String report_history =
+      devamscore + "/clock/history"; // GET /clock/history/{type}/{start}/{end}
 }

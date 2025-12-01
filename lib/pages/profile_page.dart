@@ -3,6 +3,8 @@ import 'package:beewhere/pages/log_viewer_page.dart';
 import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
+import 'package:beewhere/widgets/bottom_nav.dart';
+import 'package:beewhere/widgets/drawer.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -98,6 +100,20 @@ class _ProfilePageState extends State<ProfilePage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Profile')),
+      drawer: const AppDrawer(),
+      bottomNavigationBar: AppBottomNav(
+        currentIndex: 2, // Profile is index 2
+        onTap: (index) {
+          if (index == 0) {
+            Navigator.pushReplacementNamed(context, '/home');
+          } else if (index == 1) {
+            Navigator.pushReplacementNamed(context, '/history');
+          } else if (index == 3) {
+            Navigator.pushReplacementNamed(context, '/report');
+          }
+          // If index == 2 (Profile), do nothing as we're already here
+        },
+      ),
       body: SingleChildScrollView(
         child: Column(
           children: [

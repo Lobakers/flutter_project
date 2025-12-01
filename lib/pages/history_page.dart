@@ -1,5 +1,7 @@
 import 'package:beewhere/controller/history_api.dart';
 import 'package:beewhere/theme/color_theme.dart';
+import 'package:beewhere/widgets/bottom_nav.dart';
+import 'package:beewhere/widgets/drawer.dart';
 import 'package:beewhere/widgets/edit_activity_dialog.dart';
 import 'package:beewhere/widgets/edit_time_request_dialog.dart';
 import 'package:flutter/material.dart';
@@ -137,26 +139,6 @@ class _HistoryPageState extends State<HistoryPage> {
     }
   }
 
-  Future<void> _selectDateRange() async {
-    final DateTimeRange? picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now(),
-      initialDateRange: DateTimeRange(
-        start: _startDate ?? DateTime.now().subtract(const Duration(days: 30)),
-        end: _endDate ?? DateTime.now(),
-      ),
-    );
-
-    if (picked != null) {
-      setState(() {
-        _startDate = picked.start;
-        _endDate = picked.end;
-      });
-      _loadHistory();
-    }
-  }
-
   Future<void> _showEditActivityDialog(Map<String, dynamic> record) async {
     final clockGuid = record['CLOCK_LOG_GUID'] ?? record['clockLogGuid'];
     if (clockGuid == null) {
@@ -205,21 +187,29 @@ class _HistoryPageState extends State<HistoryPage> {
         title: const Text('Attendance History'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.date_range),
-            onPressed: _selectDateRange,
-            tooltip: 'Select Date Range',
-          ),
-          IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loadHistory,
             tooltip: 'Refresh',
           ),
         ],
       ),
+      drawer: const AppDrawer(),
+      bottomNavigationBar: AppBottomNav(
+        currentIndex: 1, // History is index 1
+        onTap: (index) {
+          if (index == 0) {
+            Navigator.pushReplacementNamed(context, '/home');
+          } else if (index == 2) {
+            Navigator.pushReplacementNamed(context, '/profile');
+          } else if (index == 3) {
+            Navigator.pushReplacementNamed(context, '/report');
+          }
+          // If index == 1 (History), do nothing as we're already here
+        },
+      ),
       body: Column(
         children: [
           _buildSummaryCard(),
-          _buildDateRangeDisplay(),
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
@@ -286,31 +276,6 @@ class _HistoryPageState extends State<HistoryPage> {
           style: const TextStyle(color: Colors.white70, fontSize: 12),
         ),
       ],
-    );
-  }
-
-  Widget _buildDateRangeDisplay() {
-    final dateFormat = DateFormat('MMM dd, yyyy');
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 15),
-      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade100,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.calendar_today, size: 16, color: Colors.grey),
-          const SizedBox(width: 8),
-          Text(
-            _startDate != null && _endDate != null
-                ? '${dateFormat.format(_startDate!)} - ${dateFormat.format(_endDate!)}'
-                : 'All Time',
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-          ),
-        ],
-      ),
     );
   }
 

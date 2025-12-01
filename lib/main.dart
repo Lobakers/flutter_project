@@ -2,6 +2,7 @@ import 'package:beewhere/pages/history_page.dart';
 import 'package:beewhere/pages/home_page.dart';
 import 'package:beewhere/pages/login_page.dart';
 import 'package:beewhere/pages/profile_page.dart';
+import 'package:beewhere/pages/report_page.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/services/logger_service.dart';
@@ -43,6 +44,7 @@ class MyApp extends StatelessWidget {
         '/home': (context) => const HomePage(),
         '/history': (context) => const HistoryPage(),
         '/profile': (context) => const ProfilePage(),
+        '/report': (context) => const ReportPage(),
       },
     );
   }
