@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:beewhere/routes/api.dart';
 
@@ -21,14 +22,29 @@ class LoginApi {
       }),
     );
 
-    final data = jsonDecode(response.body);
+    debugPrint('Login Response Status: ${response.statusCode}');
+    debugPrint('Login Response Body: ${response.body}');
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return {"success": true, "data": data};
-    } else {
+    try {
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return {"success": true, "data": data};
+      } else {
+        return {
+          "success": false,
+          "message":
+              data['message']?['message'] ??
+              data['message'] ??
+              'Login failed with status ${response.statusCode}',
+        };
+      }
+    } catch (e) {
+      debugPrint('Error decoding login response: $e');
       return {
         "success": false,
-        "message": data['message']?['message'] ?? 'Login failed',
+        "message":
+            'Server error (${response.statusCode}): Invalid response format',
       };
     }
   }
