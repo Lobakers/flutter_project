@@ -12,7 +12,7 @@ class ReportPage extends StatefulWidget {
 }
 
 class _ReportPageState extends State<ReportPage> {
-  final int _currentIndex = 3; // Report tab index
+  final int _currentIndex = 2; // Report tab index
 
   // Form state
   String _reportType = 'attendance'; // Default: attendance
@@ -233,10 +233,22 @@ class _ReportPageState extends State<ReportPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Report'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight),
+        child: Container(
+          decoration: const BoxDecoration(
+            image: DecorationImage(
+              image: AssetImage('assets/images/background_login.png'),
+              fit: BoxFit.cover,
+            ),
+          ),
+          child: AppBar(
+            title: const Text('Report'),
+            backgroundColor: Colors.transparent,
+            foregroundColor: Colors.white,
+            elevation: 0,
+          ),
+        ),
       ),
       drawer: const AppDrawer(),
       bottomNavigationBar: AppBottomNav(
@@ -246,7 +258,7 @@ class _ReportPageState extends State<ReportPage> {
             Navigator.pushReplacementNamed(context, '/home');
           } else if (index == 1) {
             Navigator.pushReplacementNamed(context, '/history');
-          } else if (index == 2) {
+          } else if (index == 3) {
             Navigator.pushReplacementNamed(context, '/profile');
           }
         },
@@ -353,7 +365,7 @@ class _ReportPageState extends State<ReportPage> {
             ElevatedButton(
               onPressed: _showReport,
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
+                backgroundColor: const Color(0xFF6366F1), // Purple-blue theme
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
@@ -512,7 +524,9 @@ class _ReportPageState extends State<ReportPage> {
             // Header Row
             Container(
               decoration: BoxDecoration(
-                color: Colors.blue.shade50,
+                color: const Color(
+                  0xFF6366F1,
+                ).withOpacity(0.1), // Purple-blue theme light
                 borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(12),
                   topRight: Radius.circular(12),
@@ -677,15 +691,15 @@ class _ReportPageState extends State<ReportPage> {
                             vertical: 6,
                           ),
                           decoration: BoxDecoration(
-                            color: Colors.blue.shade50,
+                            color: const Color(0xFF6366F1).withOpacity(0.1),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
                             item['duration']?.toString() ?? '-N/A-',
-                            style: TextStyle(
+                            style: const TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.bold,
-                              color: Colors.blue.shade900,
+                              color: Color(0xFF6366F1),
                             ),
                           ),
                         ),

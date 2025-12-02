@@ -99,25 +99,95 @@ class _ProfilePageState extends State<ProfilePage> {
     final userId = auth.userInfo?['userId'] ?? 'N/A';
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Profile')),
-      drawer: const AppDrawer(),
       bottomNavigationBar: AppBottomNav(
-        currentIndex: 2, // Profile is index 2
+        currentIndex: 3, // Profile is index 3
         onTap: (index) {
           if (index == 0) {
             Navigator.pushReplacementNamed(context, '/home');
           } else if (index == 1) {
             Navigator.pushReplacementNamed(context, '/history');
-          } else if (index == 3) {
+          } else if (index == 2) {
             Navigator.pushReplacementNamed(context, '/report');
           }
-          // If index == 2 (Profile), do nothing as we're already here
+          // If index == 3 (Profile), do nothing as we're already here
         },
       ),
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(300),
+        child: Container(
+          decoration: const BoxDecoration(
+            image: DecorationImage(
+              image: AssetImage('assets/images/background_login.png'),
+              fit: BoxFit.cover,
+            ),
+          ),
+          child: Column(
+            children: [
+              AppBar(
+                backgroundColor: Colors.transparent,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                title: const Text('Profile'),
+              ),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(30, 10, 30, 30),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.2),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: const CircleAvatar(
+                        radius: 50,
+                        backgroundColor: Colors.white,
+                        child: Icon(
+                          Icons.person,
+                          size: 60,
+                          color: BeeColor.buttonColor,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      email,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      companyName,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      drawer: const AppDrawer(),
+
       body: SingleChildScrollView(
         child: Column(
           children: [
-            _buildProfileHeader(email, companyName),
             const SizedBox(height: 20),
             _buildInfoSection(userId),
             const SizedBox(height: 20),
@@ -129,62 +199,6 @@ class _ProfilePageState extends State<ProfilePage> {
             const SizedBox(height: 30),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildProfileHeader(String email, String companyName) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(30),
-      decoration: BoxDecoration(
-        gradient: BeeColor.gradient,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.2),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: const CircleAvatar(
-              radius: 50,
-              backgroundColor: Colors.white,
-              child: Icon(Icons.person, size: 60, color: BeeColor.buttonColor),
-            ),
-          ),
-          const SizedBox(height: 20),
-          Text(
-            email,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            companyName,
-            style: const TextStyle(color: Colors.white70, fontSize: 16),
-            textAlign: TextAlign.center,
-          ),
-        ],
       ),
     );
   }

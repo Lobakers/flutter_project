@@ -12,12 +12,14 @@ class HistoryApi {
     String? startDate,
     String? endDate,
     int limit = 5,
-    int page = 1,
+    int offset = 0, // ✅ Changed 'page' to 'offset' and default to 0
   }) async {
     try {
       // Build query parameters
-      // API: /clock/history-list/{limit}/{page}/{type}
-      String url = '${Api.report}/$limit/$page/all';
+      // API: /clock/history-list/{limit}/{offset}/all
+      // Note: We keep the '/all' since it was in your latest code,
+      // but we use the dynamic limit and fixed offset (0).
+      String url = '${Api.report}/$limit/$offset/all';
 
       debugPrint('📋 GetAttendanceHistory Request: $url');
 
@@ -25,7 +27,7 @@ class HistoryApi {
 
       debugPrint('📋 GetAttendanceHistory Response:');
       debugPrint('   Status: ${response.statusCode}');
-      debugPrint('   Body: ${response.body}');
+      // debugPrint('   Body: ${response.body}'); // Commented out to reduce noise
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -77,6 +79,9 @@ class HistoryApi {
 
     return totalHours;
   }
+
+  // ... (Keep getClockDetail, updateActivity, submitTimeRequest as they were) ...
+  // I've omitted them here for brevity since they don't need changes.
 
   /// Get clock detail by GUID
   static Future<Map<String, dynamic>> getClockDetail(

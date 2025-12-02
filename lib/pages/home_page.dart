@@ -653,22 +653,85 @@ class _HomePageState extends State<HomePage> {
     final isMonitoring = _autoClockOutService?.isMonitoring ?? false;
 
     return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        title: const Text('beeWhere'),
-        actions: [
-          if (isMonitoring)
-            Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Row(
-                children: const [
-                  Icon(Icons.location_on, color: Colors.green, size: 20),
-                  SizedBox(width: 4),
-                  Text('Tracking', style: TextStyle(fontSize: 12)),
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(
+          176,
+        ), // AppBar height (56) + Banner height (120)
+        child: Container(
+          decoration: const BoxDecoration(
+            image: DecorationImage(
+              image: AssetImage('assets/images/background_login.png'),
+              fit: BoxFit.cover,
+            ),
+          ),
+          child: Column(
+            children: [
+              AppBar(
+                backgroundColor: Colors.transparent,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                title: const Text('beeWhere'),
+                actions: [
+                  if (isMonitoring)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 16),
+                      child: Row(
+                        children: const [
+                          Icon(
+                            Icons.location_on,
+                            color: Colors.green,
+                            size: 20,
+                          ),
+                          SizedBox(width: 4),
+                          Text('Tracking', style: TextStyle(fontSize: 12)),
+                        ],
+                      ),
+                    ),
                 ],
               ),
-            ),
-        ],
+              // User info section (previously the banner)
+              Container(
+                height: 120,
+                width: double.infinity,
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.account_circle,
+                      size: 80,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 20),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text(
+                          'Good Day!',
+                          style: TextStyle(fontSize: 16, color: Colors.white),
+                        ),
+                        Text(
+                          email,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                        Text(
+                          companyName,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
       drawer: const AppDrawer(),
       bottomNavigationBar: AppBottomNav(
@@ -678,11 +741,11 @@ class _HomePageState extends State<HomePage> {
             // Navigate to history page
             Navigator.pushReplacementNamed(context, '/history');
           } else if (index == 2) {
-            // Navigate to profile page
-            Navigator.pushReplacementNamed(context, '/profile');
-          } else if (index == 3) {
             // Navigate to report page
             Navigator.pushReplacementNamed(context, '/report');
+          } else if (index == 3) {
+            // Navigate to profile page
+            Navigator.pushReplacementNamed(context, '/profile');
           }
           // If index == 0 (Home), do nothing as we're already here
         },
@@ -693,7 +756,6 @@ class _HomePageState extends State<HomePage> {
           physics: const AlwaysScrollableScrollPhysics(),
           child: Column(
             children: [
-              _buildBanner(email, companyName),
               _buildTimeCard(),
               const SizedBox(height: 10),
               _buildJobTypeButtons(attendance),
@@ -804,44 +866,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildBanner(String email, String companyName) {
-    return Container(
-      height: 120,
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: const BoxDecoration(
-        image: DecorationImage(
-          image: AssetImage('assets/images/background_login.png'),
-          fit: BoxFit.cover,
-        ),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.account_circle, size: 80, color: Colors.white),
-          const SizedBox(width: 20),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text(
-                'Good Day!',
-                style: TextStyle(fontSize: 16, color: Colors.white),
-              ),
-              Text(
-                email,
-                style: const TextStyle(fontSize: 14, color: Colors.white),
-              ),
-              Text(
-                companyName,
-                style: const TextStyle(fontSize: 14, color: Colors.white),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildTimeCard() {
     return Container(
       margin: const EdgeInsets.all(15),
@@ -916,6 +940,9 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildJobButton(String title) {
     final isSelected = _selectedJobType == title;
+    const purpleBlue = Color(
+      0xFF6366F1,
+    ); // Purple-blue/indigo to match background theme
     return Expanded(
       child: GestureDetector(
         onTap: _isClockedIn ? null : () => _onJobTypeSelected(title),
@@ -923,16 +950,16 @@ class _HomePageState extends State<HomePage> {
           margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 10),
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
-            color: isSelected ? Colors.blue : Colors.white,
+            color: isSelected ? purpleBlue : Colors.white,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.blue),
+            border: Border.all(color: purpleBlue),
           ),
           child: Center(
             child: Text(
               title,
               style: TextStyle(
                 fontWeight: FontWeight.bold,
-                color: isSelected ? Colors.white : Colors.blue,
+                color: isSelected ? Colors.white : purpleBlue,
               ),
             ),
           ),

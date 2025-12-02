@@ -21,10 +21,14 @@ class _HistoryPageState extends State<HistoryPage> {
   String? _errorMessage;
   double _totalHours = 0.0;
 
-  // Pagination
+  // Pagination - CUMULATIVE LOADING STRATEGY
   final ScrollController _scrollController = ScrollController();
-  int _currentPage = 1;
-  final int _limit = 5;
+
+  // ✅ Changed: Use dynamic limit instead of page number
+  int _currentLimit = 5;
+  final int _incrementStep = 5; // How many more to fetch each time
+  int _previousRecordCount = 0; // To track if we got new data
+
   bool _hasMore = true;
 
   // Date range filter
@@ -63,7 +67,11 @@ class _HistoryPageState extends State<HistoryPage> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
-      _currentPage = 1;
+
+      // ✅ Reset cumulative counters
+      _currentLimit = 5;
+      _previousRecordCount = 0;
+
       _records = [];
       _hasMore = true;
     });
@@ -75,7 +83,8 @@ class _HistoryPageState extends State<HistoryPage> {
     if (!mounted) return;
     setState(() {
       _isLoadingMore = true;
-      _currentPage++;
+      // ✅ Increase limit to fetch more data from the start
+      _currentLimit += _incrementStep;
     });
 
     await _fetchHistoryData(isLoadMore: true);
@@ -94,8 +103,8 @@ class _HistoryPageState extends State<HistoryPage> {
         context,
         startDate: startDateStr,
         endDate: endDateStr,
-        limit: _limit,
-        page: _currentPage,
+        limit: _currentLimit, // ✅ Request larger batch
+        offset: 0, // ✅ Always start from 0
       );
 
       if (mounted) {
@@ -103,15 +112,19 @@ class _HistoryPageState extends State<HistoryPage> {
           final newRecords = result['data'] as List<dynamic>;
 
           setState(() {
-            if (isLoadMore) {
-              _records.addAll(newRecords);
-            } else {
-              _records = newRecords;
+            // ✅ REPLACE records instead of appending
+            // (because newRecords contains the old ones + new ones)
+            _records = newRecords;
+
+            // ✅ Check if we actually got more records than last time
+            // If the count didn't increase, we've reached the end.
+            if (isLoadMore && newRecords.length <= _previousRecordCount) {
+              _hasMore = false;
             }
 
-            // Relaxed check: If we got ANY records, try fetching more.
-            // Only stop if we get 0 records.
-            _hasMore = newRecords.isNotEmpty;
+            // Update previous count for next check
+            _previousRecordCount = newRecords.length;
+
             _totalHours = HistoryApi.calculateTotalHours(_records);
             _isLoading = false;
             _isLoadingMore = false;
@@ -120,6 +133,9 @@ class _HistoryPageState extends State<HistoryPage> {
           setState(() {
             if (!isLoadMore) {
               _errorMessage = result['message'] ?? 'Failed to load history';
+            } else {
+              // Revert limit if failed
+              _currentLimit -= _incrementStep;
             }
             _isLoading = false;
             _isLoadingMore = false;
@@ -131,6 +147,9 @@ class _HistoryPageState extends State<HistoryPage> {
         setState(() {
           if (!isLoadMore) {
             _errorMessage = 'Error loading history: $e';
+          } else {
+            // Revert limit if failed
+            _currentLimit -= _incrementStep;
           }
           _isLoading = false;
           _isLoadingMore = false;
@@ -138,6 +157,8 @@ class _HistoryPageState extends State<HistoryPage> {
       }
     }
   }
+
+  // ... (Rest of the file remains the same: _showEditActivityDialog, build, etc.) ...
 
   Future<void> _showEditActivityDialog(Map<String, dynamic> record) async {
     final clockGuid = record['CLOCK_LOG_GUID'] ?? record['clockLogGuid'];
@@ -183,15 +204,29 @@ class _HistoryPageState extends State<HistoryPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Attendance History'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadHistory,
-            tooltip: 'Refresh',
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight),
+        child: Container(
+          decoration: const BoxDecoration(
+            image: DecorationImage(
+              image: AssetImage('assets/images/background_login.png'),
+              fit: BoxFit.cover,
+            ),
           ),
-        ],
+          child: AppBar(
+            backgroundColor: Colors.transparent,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            title: const Text('Attendance History'),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: _loadHistory,
+                tooltip: 'Refresh',
+              ),
+            ],
+          ),
+        ),
       ),
       drawer: const AppDrawer(),
       bottomNavigationBar: AppBottomNav(
@@ -200,9 +235,9 @@ class _HistoryPageState extends State<HistoryPage> {
           if (index == 0) {
             Navigator.pushReplacementNamed(context, '/home');
           } else if (index == 2) {
-            Navigator.pushReplacementNamed(context, '/profile');
-          } else if (index == 3) {
             Navigator.pushReplacementNamed(context, '/report');
+          } else if (index == 3) {
+            Navigator.pushReplacementNamed(context, '/profile');
           }
           // If index == 1 (History), do nothing as we're already here
         },
