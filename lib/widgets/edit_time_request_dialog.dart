@@ -152,15 +152,35 @@ class _EditTimeRequestDialogState extends State<EditTimeRequestDialog> {
 
   Future<void> _submitRequest() async {
     if (_startTime == null || _endTime == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select start and end times')),
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Validation Error'),
+          content: const Text('Please select start and end times'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
       );
       return;
     }
 
     if (_descriptionController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a description')),
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Validation Error'),
+          content: const Text('Please enter a description'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
       );
       return;
     }
@@ -206,10 +226,33 @@ class _EditTimeRequestDialogState extends State<EditTimeRequestDialog> {
       });
 
       if (result['success']) {
-        Navigator.of(context).pop(true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Request submitted successfully')),
+        // Show styled success dialog first
+        await showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            backgroundColor: const Color(0xFF2DD36F),
+            title: const Text(
+              'Request Submitted',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white),
+            ),
+            content: const Text(
+              'Your time change request has been submitted successfully',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
         );
+        // Then close the edit dialog and return to history page
+        if (mounted) {
+          Navigator.of(context).pop(true);
+        }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

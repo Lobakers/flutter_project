@@ -345,6 +345,20 @@ class _HistoryPageState extends State<HistoryPage> {
         record['ADDRESS_IN'] ?? record['ADDRESS_OUT'] ?? 'No address';
     final clientName = record['CLIENT_NAME'] ?? '';
 
+    // Extract activity names from ACTIVITY array
+    final activities = record['ACTIVITY'] as List<dynamic>?;
+    final activityNames = <String>[];
+    if (activities != null && activities.isNotEmpty) {
+      for (var activity in activities) {
+        if (activity is Map<String, dynamic>) {
+          final name = activity['name'] as String?;
+          if (name != null && name.isNotEmpty) {
+            activityNames.add(name);
+          }
+        }
+      }
+    }
+
     // Calculate duration
     String duration = 'In Progress';
     if (clockInTime.isNotEmpty && clockOutTime.isNotEmpty) {
@@ -495,6 +509,24 @@ class _HistoryPageState extends State<HistoryPage> {
                 ),
               ],
             ),
+
+            // Activities (if available)
+            if (activityNames.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.task_alt, size: 16, color: Colors.grey),
+                  const SizedBox(width: 5),
+                  Text(
+                    'Activity: ${activityNames.join(', ')}',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ],
 
             // Action Buttons
             const SizedBox(height: 12),

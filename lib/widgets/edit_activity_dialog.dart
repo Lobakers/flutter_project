@@ -105,10 +105,33 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
 
     if (mounted) {
       if (result['success']) {
-        Navigator.of(context).pop(true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Activity updated successfully')),
+        // Show styled success dialog first
+        await showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            backgroundColor: const Color(0xFF2DD36F),
+            title: const Text(
+              'Activity Updated',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white),
+            ),
+            content: const Text(
+              'Your activity has been updated successfully',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
         );
+        // Then close the edit dialog and return to history page
+        if (mounted) {
+          Navigator.of(context).pop(true);
+        }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -174,11 +197,12 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: _addActivityField,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add Activity'),
-                  ),
+                  // COMMENTED OUT: Add Activity button (not needed for single activity)
+                  // OutlinedButton.icon(
+                  //   onPressed: _addActivityField,
+                  //   icon: const Icon(Icons.add),
+                  //   label: const Text('Add Activity'),
+                  // ),
                 ],
               ),
       ),

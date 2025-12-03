@@ -685,23 +685,46 @@ class _ReportPageState extends State<ReportPage> {
                     Expanded(
                       flex: 2,
                       child: Center(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF6366F1).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            item['duration']?.toString() ?? '-N/A-',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF6366F1),
-                            ),
-                          ),
+                        child: Builder(
+                          builder: (context) {
+                            // Parse duration to check if it meets 9 hours
+                            final durationStr =
+                                item['duration']?.toString() ?? '0';
+                            double durationValue = 0;
+                            try {
+                              durationValue = double.parse(durationStr);
+                            } catch (e) {
+                              durationValue = 0;
+                            }
+
+                            // Red if less than 9 hours, purple-blue if 9+ hours
+                            final isUndertime = durationValue < 9.0;
+                            final bgColor = isUndertime
+                                ? Colors.red.shade50
+                                : const Color(0xFF6366F1).withOpacity(0.1);
+                            final textColor = isUndertime
+                                ? Colors.red.shade700
+                                : const Color(0xFF6366F1);
+
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: bgColor,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                durationStr == '0' ? '-N/A-' : durationStr,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: textColor,
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ),
                     ),

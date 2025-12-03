@@ -174,8 +174,10 @@ class _HomePageState extends State<HomePage> {
     await DeviceInfoHelper.init();
     await _loadAttendanceProfile();
     await _loadDropdownData();
-    await _checkExistingClock();
+    // ✅ FIX: Get location FIRST before checking clock status
+    // This ensures _latitude and _longitude are available for geofence monitoring
     await _getCurrentPosition();
+    await _checkExistingClock();
   }
 
   void _startTimers() {
@@ -333,7 +335,7 @@ class _HomePageState extends State<HomePage> {
         clientLng,
       );
 
-      final isNearby = distance <= 10000.0;
+      final isNearby = distance <= 1000.0;
       if (isNearby) {
         debugPrint(
           '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',

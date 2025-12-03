@@ -38,7 +38,7 @@ class LoggerService {
 
     // Initialize database for log storage
     await _initDatabase();
-    
+
     _isInitialized = true;
     info('LoggerService initialized');
   }
