@@ -318,14 +318,94 @@ class _HomePageState extends State<HomePage> {
   // ===================== GEOFENCE =====================
 
   /// Filter clients to show only those within 250m of current location
+  // List<dynamic> _getNearbyClients() {
+  //   if (_latitude == null || _longitude == null) {
+  //     debugPrint(
+  //       '⚠️ No location available, showing all ${_clients.length} clients',
+  //     );
+  //     return _clients; // Return all if no location
+  //   }
+
+  //   final nearbyClients = _clients.where((client) {
+  //     final locationData = client['LOCATION_DATA'] as List<dynamic>?;
+  //     if (locationData == null || locationData.isEmpty) {
+  //       return false; // Exclude clients without location
+  //     }
+
+  //     final location = locationData[0];
+  //     final clientLat = (location['LATITUDE'] as num?)?.toDouble();
+  //     final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+
+  //     if (clientLat == null || clientLng == null) {
+  //       return false; // Exclude clients with invalid coordinates
+  //     }
+
+  //     // Calculate distance
+  //     final distance = GeofenceHelper.calculateDistance(
+  //       _latitude!,
+  //       _longitude!,
+  //       clientLat,
+  //       clientLng,
+  //     );
+
+  //     final isNearby = distance <= 1000.0;
+  //     if (isNearby) {
+  //       // debugPrint(
+  //       //   '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',
+  //       // );
+  //     }
+
+  //     return isNearby; // Only include clients within 250m
+  //   }).toList();
+
+  //   // debugPrint(
+  //   //   '📍 Found ${nearbyClients.length} clients within 250m (out of ${_clients.length} total)',
+  //   // );
+
+  //   // Deduplicate by CLIENT_GUID to prevent dropdown errors
+  //   final seenGuids = <String>{};
+  //   final uniqueClients = nearbyClients.where((client) {
+  //     final guid = client['CLIENT_GUID'] as String?;
+  //     if (guid == null || seenGuids.contains(guid)) {
+  //       return false;
+  //     }
+  //     seenGuids.add(guid);
+  //     return true;
+  //   }).toList();
+
+  //   if (uniqueClients.length < nearbyClients.length) {
+  //     debugPrint(
+  //       '⚠️ Removed ${nearbyClients.length - uniqueClients.length} duplicate clients',
+  //     );
+  //   }
+
+  //   return uniqueClients;
+  // }
+
+  /// Filter clients based on geofence_filter setting for the selected job type
   List<dynamic> _getNearbyClients() {
+    // ✨ NEW: Check if geofence filtering is enabled for current job type
+    final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+    final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+    final shouldFilterByGeofence = jobTypeConfig['geofence_filter'] ?? false;
+
+    // If geofence filtering is disabled, return all clients
+    if (!shouldFilterByGeofence) {
+      debugPrint(
+        '📍 Geofence filter disabled for $_selectedJobType, showing all ${_clients.length} clients',
+      );
+      return _clients;
+    }
+
+    // If no location available, return all clients with a warning
     if (_latitude == null || _longitude == null) {
       debugPrint(
         '⚠️ No location available, showing all ${_clients.length} clients',
       );
-      return _clients; // Return all if no location
+      return _clients;
     }
 
+    // Filter clients within 1000m
     final nearbyClients = _clients.where((client) {
       final locationData = client['LOCATION_DATA'] as List<dynamic>?;
       if (locationData == null || locationData.isEmpty) {
@@ -348,19 +428,12 @@ class _HomePageState extends State<HomePage> {
         clientLng,
       );
 
-      final isNearby = distance <= 1000.0;
-      if (isNearby) {
-        // debugPrint(
-        //   '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',
-        // );
-      }
-
-      return isNearby; // Only include clients within 250m
+      return distance <= 1000.0; // Only include clients within 1000m
     }).toList();
 
-    // debugPrint(
-    //   '📍 Found ${nearbyClients.length} clients within 250m (out of ${_clients.length} total)',
-    // );
+    debugPrint(
+      '📍 Found ${nearbyClients.length} clients within 1000m (out of ${_clients.length} total)',
+    );
 
     // Deduplicate by CLIENT_GUID to prevent dropdown errors
     final seenGuids = <String>{};
