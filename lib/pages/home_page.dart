@@ -20,6 +20,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:slide_to_act/slide_to_act.dart';
+import 'package:beewhere/widgets/location_map_widget.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -29,6 +30,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  Timer? _locationAutoRefreshTimer; // Timer for auto location refresh
   // Location state
   String _currentAddress = "Tap to get location"; // Now stores coordinates
   bool _isLoading = false;
@@ -91,6 +93,7 @@ class _HomePageState extends State<HomePage> {
 
     _initializeData();
     _startTimers();
+    _startLocationAutoRefresh();
   }
 
   @override
@@ -99,6 +102,15 @@ class _HomePageState extends State<HomePage> {
     _activityController.dispose();
     _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
     super.dispose();
+  }
+
+  // start auto location refresh
+  void _startLocationAutoRefresh() {
+    _locationAutoRefreshTimer = Timer.periodic(const Duration(minutes: 3), (_) {
+      if (mounted && !_isLoading) {
+        _getCurrentPosition(); // ✨ Just call your existing method
+      }
+    });
   }
 
   // ✨ CALLBACK: When user leaves geofence area
@@ -298,7 +310,9 @@ class _HomePageState extends State<HomePage> {
 
       // 🧪 DEBUG: Print your real lat/long - COPY THIS TO testMode!
       debugPrint('═══════════════════════════════════════════');
-      debugPrint('🧪 YOUR REAL LOCATION:');
+      debugPrint(
+        '🧪 YOUR REAL LOCATION at ${DateTime.now().toIso8601String()}:',
+      );
       debugPrint('   const double testLat = $_latitude;');
       debugPrint('   const double testLng = $_longitude;');
       debugPrint('═══════════════════════════════════════════');
@@ -1090,45 +1104,115 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // Widget _buildLocationDisplay() {
+  //   return Padding(
+  //     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+  //     child: Row(
+  //       children: [
+  //         Expanded(
+  //           child: Container(
+  //             height: 50,
+  //             padding: const EdgeInsets.symmetric(horizontal: 12),
+  //             decoration: BoxDecoration(
+  //               color: Colors.grey.shade100,
+  //               borderRadius: BorderRadius.circular(8),
+  //               border: Border.all(color: Colors.grey.shade300),
+  //             ),
+  //             child: Center(
+  //               child: _isLoading
+  //                   ? const CircularProgressIndicator(strokeWidth: 2)
+  //                   : Text(
+  //                       _currentAddress,
+  //                       style: const TextStyle(fontSize: 14),
+  //                       overflow: TextOverflow.ellipsis,
+  //                     ),
+  //             ),
+  //           ),
+  //         ),
+  //         const SizedBox(width: 10),
+  //         Container(
+  //           decoration: BoxDecoration(
+  //             color: BeeColor.fillIcon,
+  //             borderRadius: BorderRadius.circular(30),
+  //             border: Border.all(color: Colors.black, width: 2),
+  //           ),
+  //           child: IconButton(
+  //             icon: const Icon(Icons.my_location),
+  //             onPressed: _isLoading ? null : _getCurrentPosition,
+  //           ),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
+
   Widget _buildLocationDisplay() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      child: Row(
-        children: [
-          Expanded(
-            child: Container(
-              height: 50,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Center(
-                child: _isLoading
-                    ? const CircularProgressIndicator(strokeWidth: 2)
-                    : Text(
-                        _currentAddress,
-                        style: const TextStyle(fontSize: 14),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
+    return Column(
+      children: [
+        // 🗺️ Map display with refresh button inside
+        if (_latitude != null && _longitude != null)
+          LocationMapWidget(
+            latitude: _latitude!,
+            longitude: _longitude!,
+            height: 200,
+            showRefreshButton: true, // ✨ Refresh button inside map
+            onRefresh: _isLoading ? null : _getCurrentPosition,
+          )
+        else
+          // Show placeholder when no location
           Container(
+            height: 200,
+            margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             decoration: BoxDecoration(
-              color: BeeColor.fillIcon,
-              borderRadius: BorderRadius.circular(30),
-              border: Border.all(color: Colors.black, width: 2),
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade300, width: 2),
             ),
-            child: IconButton(
-              icon: const Icon(Icons.my_location),
-              onPressed: _isLoading ? null : _getCurrentPosition,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.location_off,
+                    size: 48,
+                    color: Colors.grey.shade400,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'No Location Available',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey.shade600,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    onPressed: _isLoading ? null : _getCurrentPosition,
+                    icon: _isLoading
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.my_location),
+                    label: Text(
+                      _isLoading ? 'Getting Location...' : 'Get Location',
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
