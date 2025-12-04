@@ -493,22 +493,22 @@ class _HistoryPageState extends State<HistoryPage> {
             ],
 
             // Address
-            const SizedBox(height: 8),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.location_on, size: 16, color: Colors.grey),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    address,
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
+            // const SizedBox(height: 8),
+            // Row(
+            //   crossAxisAlignment: CrossAxisAlignment.start,
+            //   children: [
+            //     const Icon(Icons.location_on, size: 16, color: Colors.grey),
+            //     const SizedBox(width: 5),
+            //     Expanded(
+            //       child: Text(
+            //         address,
+            //         style: const TextStyle(fontSize: 12, color: Colors.grey),
+            //         maxLines: 2,
+            //         overflow: TextOverflow.ellipsis,
+            //       ),
+            //     ),
+            //   ],
+            // ),
 
             // Activities (if available)
             if (activityNames.isNotEmpty) ...[

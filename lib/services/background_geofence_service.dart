@@ -243,9 +243,9 @@ class GeofenceTaskHandler extends TaskHandler {
         return;
       }
 
-      final userGuid = userInfo['USER_GUID'] as String?;
+      final userGuid = userInfo['userId'] as String?;
       if (userGuid == null) {
-        LoggerService.error('No USER_GUID found', tag: 'GeofenceTaskHandler');
+        LoggerService.error('No userId found', tag: 'GeofenceTaskHandler');
         return;
       }
 
@@ -293,7 +293,7 @@ class GeofenceTaskHandler extends TaskHandler {
         Uri.parse('https://devamscore.beesuite.app/api/clock/transaction'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
+          'Authorization': 'JWT $token',
         },
         body: jsonEncode({
           'userGuid': userGuid,

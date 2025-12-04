@@ -197,6 +197,17 @@ class _HomePageState extends State<HomePage> {
         _currentTime = DateFormat('HH:mm a').format(now);
         _currentDate = DateFormat('dd MMMM, yyyy').format(now);
         _currentDay = DateFormat('EEEE').format(now);
+
+        // ✨ Update live duration if clocked in
+        if (_isClockedIn && _clockInTime != null) {
+          final clockInDate = _parseClockInTime(_clockInTime);
+          if (clockInDate != null) {
+            final difference = now.difference(clockInDate);
+            final hours = difference.inHours;
+            final minutes = difference.inMinutes % 60;
+            _clockStatus = '$hours hours $minutes minute';
+          }
+        }
       });
     }
   }
@@ -230,7 +241,9 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _isClockedIn = true;
         _clockRefGuid = result['clockLogGuid'];
-        _clockStatus = result['clockTime'] ?? '';
+        _clockStatus = _formatClockTime(result['clockTime']); // ✨ Format time
+        _clockInTime =
+            result['clockTime']; // Store clock-in time for clock-out dialog
         _selectedJobType = _capitalizeFirst(result['jobType'] ?? '');
         _selectedClient = result['clientId'];
         _selectedProject = result['projectId'];
@@ -337,18 +350,36 @@ class _HomePageState extends State<HomePage> {
 
       final isNearby = distance <= 1000.0;
       if (isNearby) {
-        debugPrint(
-          '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',
-        );
+        // debugPrint(
+        //   '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',
+        // );
       }
 
       return isNearby; // Only include clients within 250m
     }).toList();
 
-    debugPrint(
-      '📍 Found ${nearbyClients.length} clients within 250m (out of ${_clients.length} total)',
-    );
-    return nearbyClients;
+    // debugPrint(
+    //   '📍 Found ${nearbyClients.length} clients within 250m (out of ${_clients.length} total)',
+    // );
+
+    // Deduplicate by CLIENT_GUID to prevent dropdown errors
+    final seenGuids = <String>{};
+    final uniqueClients = nearbyClients.where((client) {
+      final guid = client['CLIENT_GUID'] as String?;
+      if (guid == null || seenGuids.contains(guid)) {
+        return false;
+      }
+      seenGuids.add(guid);
+      return true;
+    }).toList();
+
+    if (uniqueClients.length < nearbyClients.length) {
+      debugPrint(
+        '⚠️ Removed ${nearbyClients.length - uniqueClients.length} duplicate clients',
+      );
+    }
+
+    return uniqueClients;
   }
 
   void _startGeofenceMonitoringForClient(String? clientGuid) {
@@ -389,33 +420,10 @@ class _HomePageState extends State<HomePage> {
 
       // Get target location (same logic as foreground geofence)
       // Use user's current location as geofence center (where they clocked in)
+      // This ensures consistency between foreground and background monitoring
       double? targetLat = _latitude;
       double? targetLng = _longitude;
       String? targetAddress = _currentAddress;
-
-      // Use test mode if enabled
-      const bool testMode = false;
-      if (testMode && _latitude != null && _longitude != null) {
-        targetLat = _latitude;
-        targetLng = _longitude;
-        targetAddress = "Test Location - Your Current Position";
-      } else if (_selectedClient != null && _selectedClient!.isNotEmpty) {
-        // Find client from list
-        try {
-          final client = _clients.firstWhere(
-            (c) => c['CLIENT_GUID'] == _selectedClient,
-          );
-          final locationData = client['LOCATION_DATA'] as List<dynamic>?;
-          if (locationData != null && locationData.isNotEmpty) {
-            final location = locationData[0];
-            targetLat = (location['LATITUDE'] as num?)?.toDouble();
-            targetLng = (location['LONGITUDE'] as num?)?.toDouble();
-            targetAddress = location['ADDRESS'] as String?;
-          }
-        } catch (e) {
-          debugPrint('⚠️ Error getting client location: $e');
-        }
-      }
 
       if (targetLat == null || targetLng == null || _clockRefGuid == null) {
         debugPrint(
@@ -429,7 +437,7 @@ class _HomePageState extends State<HomePage> {
         targetLat: targetLat,
         targetLng: targetLng,
         targetAddress: targetAddress ?? 'Work Location',
-        radiusInMeters: 500.0, // Same as foreground
+        radiusInMeters: 250.0, // Match foreground radius
         clockRefGuid: _clockRefGuid!,
       );
 
@@ -497,7 +505,7 @@ class _HomePageState extends State<HomePage> {
         _isClockedIn = true;
         _clockRefGuid = result['clockLogGuid'];
         _clockInTime = result['clockTime'];
-        _clockStatus = result['clockTime'];
+        _clockStatus = _formatClockTime(result['clockTime']); // ✨ Format time
       });
 
       // ✨ START GEOFENCE MONITORING AFTER CLOCK IN
@@ -506,7 +514,10 @@ class _HomePageState extends State<HomePage> {
       // ✨ REQUEST NOTIFICATION PERMISSION AND START BACKGROUND TRACKING
       await _startBackgroundTracking();
 
-      _showSuccessDialog('Clock In Successful', 'Time: ${result['clockTime']}');
+      _showSuccessDialog(
+        'Clock In Successful',
+        'Time: ${_formatClockTime(result['clockTime'])}',
+      );
     } else {
       _showDialog('Error', result['message'] ?? 'Clock in failed');
     }
@@ -553,7 +564,7 @@ class _HomePageState extends State<HomePage> {
       if (!isAutomatic) {
         _showSuccessDialog(
           'Clock Out Successful',
-          'In: $_clockInTime\nOut: ${result['clockTime']}',
+          'In: ${_formatClockTime(_clockInTime)}\nOut: ${_formatClockTime(result['clockTime'])}',
         );
       } else {
         // Show persistent notification for auto clock-out
@@ -641,6 +652,42 @@ class _HomePageState extends State<HomePage> {
 
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+
+  /// Parse clock time string to DateTime object
+  DateTime? _parseClockInTime(String? timeString) {
+    if (timeString == null || timeString.isEmpty) return null;
+
+    try {
+      // CASE 1: ISO 8601 with 'Z' (e.g., "2025-12-04T11:40:04.000Z")
+      // The API sends Local Time but marks it as UTC 'Z'.
+      if (timeString.contains('T') && timeString.endsWith('Z')) {
+        final localString = timeString.substring(0, timeString.length - 1);
+        return DateTime.parse(localString);
+      }
+      // CASE 2: Space separated (e.g., "2025-12-04 03:40:27")
+      // The API sends UTC time but without timezone info.
+      else if (timeString.contains(' ') && !timeString.contains('T')) {
+        final isoString = timeString.replaceAll(' ', 'T') + 'Z';
+        return DateTime.parse(isoString).toLocal();
+      }
+      // CASE 3: Standard ISO
+      else {
+        return DateTime.parse(timeString);
+      }
+    } catch (e) {
+      debugPrint('Error parsing time: $e');
+      return null;
+    }
+  }
+
+  /// Format clock time to Malaysia timezone (GMT+8)
+  String _formatClockTime(String? timeString) {
+    final dateTime = _parseClockInTime(timeString);
+    if (dateTime == null) return 'N/A';
+
+    // Format to readable Malaysia time: "04 Dec 2025, 11:40 AM"
+    return DateFormat('dd MMM yyyy, hh:mm a').format(dateTime);
+  }
 
   // ===================== BUILD =====================
 
@@ -741,13 +788,13 @@ class _HomePageState extends State<HomePage> {
         onTap: (index) {
           if (index == 1) {
             // Navigate to history page
-            Navigator.pushReplacementNamed(context, '/history');
+            Navigator.pushNamed(context, '/history');
           } else if (index == 2) {
             // Navigate to report page
-            Navigator.pushReplacementNamed(context, '/report');
+            Navigator.pushNamed(context, '/report');
           } else if (index == 3) {
             // Navigate to profile page
-            Navigator.pushReplacementNamed(context, '/profile');
+            Navigator.pushNamed(context, '/profile');
           }
           // If index == 0 (Home), do nothing as we're already here
         },
@@ -886,12 +933,12 @@ class _HomePageState extends State<HomePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Clock In',
+          Text(
+            _isClockedIn ? 'Clocked In' : 'Clock In',
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.bold,
-              color: Color(0xFF2DD36F),
+              color: _isClockedIn ? Colors.red : const Color(0xFF2DD36F),
             ),
           ),
           Text(
@@ -1063,6 +1110,47 @@ class _HomePageState extends State<HomePage> {
         padding: EdgeInsets.all(10),
         child: CircularProgressIndicator(),
       );
+
+    // Show helpful message when no clients are nearby
+    if (label == 'Client' && items.isEmpty) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 15),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.orange.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.orange.shade300),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.location_off, color: Colors.orange.shade700),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'No Clients Nearby',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.orange.shade900,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'No clients found within 100m of your location. Try refreshing your location or move closer to a client site.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.orange.shade800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 15),

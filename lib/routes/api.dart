@@ -12,7 +12,7 @@ class Api {
   static const String contract = devamscore + "/contract";
   static const String client_detail = devamscore + "/client/detail";
   static const String attendance_profile =
-      devamscore + "/admin/attendance/user";
+      devamscore + "/admin/attendance/user"; // button home/others...
   static const String clock = devamscore + "/clock/transaction";
   static const String clock_beewhere = devamscore + "/clock/beewhere/latest";
   static const String report = devamscore + "/clock/history-list";

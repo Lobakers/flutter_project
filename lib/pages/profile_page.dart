@@ -136,26 +136,26 @@ class _ProfilePageState extends State<ProfilePage> {
                   children: [
                     Container(
                       padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.2),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: const CircleAvatar(
-                        radius: 50,
-                        backgroundColor: Colors.white,
-                        child: Icon(
-                          Icons.person,
-                          size: 60,
-                          color: BeeColor.buttonColor,
-                        ),
-                      ),
+                      // decoration: BoxDecoration(
+                      //   color: Colors.white,
+                      //   shape: BoxShape.circle,
+                      //   boxShadow: [
+                      //     BoxShadow(
+                      //       color: Colors.black.withOpacity(0.2),
+                      //       blurRadius: 8,
+                      //       offset: const Offset(0, 2),
+                      //     ),
+                      //   ],
+                      // ),
+                      // child: const CircleAvatar(
+                      //   radius: 50,
+                      //   backgroundColor: Colors.white,
+                      //   child: Icon(
+                      //     Icons.person,
+                      //     size: 60,
+                      //     color: BeeColor.buttonColor,
+                      //   ),
+                      // ),
                     ),
                     const SizedBox(height: 20),
                     Text(
@@ -189,10 +189,10 @@ class _ProfilePageState extends State<ProfilePage> {
         child: Column(
           children: [
             const SizedBox(height: 20),
-            _buildInfoSection(userId),
-            const SizedBox(height: 20),
-            _buildSettingsSection(),
-            const SizedBox(height: 20),
+            // _buildInfoSection(userId),
+            // const SizedBox(height: 20),
+            // _buildSettingsSection(),
+            // const SizedBox(height: 20),
             _buildAboutSection(),
             const SizedBox(height: 30),
             _buildLogoutButton(),
