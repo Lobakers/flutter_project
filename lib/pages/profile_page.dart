@@ -1,5 +1,6 @@
 import 'package:beewhere/pages/login_page.dart';
 import 'package:beewhere/pages/log_viewer_page.dart';
+import 'package:beewhere/pages/web_view_page.dart';
 import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
@@ -113,7 +114,7 @@ class _ProfilePageState extends State<ProfilePage> {
         },
       ),
       appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(300),
+        preferredSize: const Size.fromHeight(180),
         child: Container(
           decoration: const BoxDecoration(
             image: DecorationImage(
@@ -157,7 +158,7 @@ class _ProfilePageState extends State<ProfilePage> {
                       //   ),
                       // ),
                     ),
-                    const SizedBox(height: 20),
+                    // const SizedBox(height: 20),
                     Text(
                       email,
                       style: const TextStyle(
@@ -360,8 +361,15 @@ class _ProfilePageState extends State<ProfilePage> {
             title: 'Privacy Policy',
             subtitle: 'View our privacy policy',
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Privacy policy coming soon')),
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const WebViewPage(
+                    url:
+                        'https://beesuite-docs.readthedocs.io/privacy_policy.html',
+                    title: 'Privacy Policy',
+                  ),
+                ),
               );
             },
           ),
@@ -371,8 +379,15 @@ class _ProfilePageState extends State<ProfilePage> {
             title: 'Terms of Service',
             subtitle: 'View terms and conditions',
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Terms of service coming soon')),
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const WebViewPage(
+                    url:
+                        'https://beesuite-docs.readthedocs.io/terms_and_conditions.html',
+                    title: 'Terms of Service',
+                  ),
+                ),
               );
             },
           ),

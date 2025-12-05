@@ -12,7 +12,8 @@
     <application
         android:label="beewhere"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
         
         <!-- Foreground Service for background location tracking -->
         <service

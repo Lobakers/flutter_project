@@ -791,7 +791,7 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(
-          176,
+          166,
         ), // AppBar height (56) + Banner height (120)
         child: Container(
           decoration: const BoxDecoration(
@@ -827,17 +827,11 @@ class _HomePageState extends State<HomePage> {
               ),
               // User info section (previously the banner)
               Container(
-                height: 120,
+                height: 110,
                 width: double.infinity,
                 padding: const EdgeInsets.all(20),
                 child: Row(
                   children: [
-                    const Icon(
-                      Icons.account_circle,
-                      size: 80,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(width: 20),
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -893,7 +887,7 @@ class _HomePageState extends State<HomePage> {
           child: Column(
             children: [
               _buildTimeCard(),
-              const SizedBox(height: 10),
+              // const SizedBox(height: 10),
               _buildJobTypeButtons(attendance),
               _buildLocationDisplay(),
               if (_selectedJobType.isNotEmpty) _buildForm(),
