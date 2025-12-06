@@ -194,7 +194,7 @@ class _ProfilePageState extends State<ProfilePage> {
             // const SizedBox(height: 20),
             // _buildSettingsSection(),
             // const SizedBox(height: 20),
-            _buildAboutSection(),
+            // _buildAboutSection(),
             const SizedBox(height: 30),
             _buildLogoutButton(),
             const SizedBox(height: 30),
