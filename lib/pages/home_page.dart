@@ -405,17 +405,17 @@ class _HomePageState extends State<HomePage> {
 
     // If geofence filtering is disabled, return all clients
     if (!shouldFilterByGeofence) {
-      debugPrint(
-        '📍 Geofence filter disabled for $_selectedJobType, showing all ${_clients.length} clients',
-      );
+      // debugPrint(
+      //   '📍 Geofence filter disabled for $_selectedJobType, showing all ${_clients.length} clients',
+      // );
       return _clients;
     }
 
     // If no location available, return all clients with a warning
     if (_latitude == null || _longitude == null) {
-      debugPrint(
-        '⚠️ No location available, showing all ${_clients.length} clients',
-      );
+      // debugPrint(
+      //   '⚠️ No location available, showing all ${_clients.length} clients',
+      // );
       return _clients;
     }
 
@@ -445,9 +445,9 @@ class _HomePageState extends State<HomePage> {
       return distance <= 1000.0; // Only include clients within 1000m
     }).toList();
 
-    debugPrint(
-      '📍 Found ${nearbyClients.length} clients within 1000m (out of ${_clients.length} total)',
-    );
+    // debugPrint(
+    //   '📍 Found ${nearbyClients.length} clients within 1000m (out of ${_clients.length} total)',
+    // );
 
     // Deduplicate by CLIENT_GUID to prevent dropdown errors
     final seenGuids = <String>{};
@@ -467,6 +467,53 @@ class _HomePageState extends State<HomePage> {
     }
 
     return uniqueClients;
+  }
+
+  /// Prepare client markers for map display
+  /// Uses the same filtering logic as dropdown
+  List<ClientMarkerData> _getClientMarkersForMap() {
+    if (_latitude == null || _longitude == null) {
+      return []; // No markers if no location
+    }
+
+    // ✨ Get filtered clients based on current job type's geofence setting
+    final filteredClients = _getNearbyClients();
+
+    // Convert to marker data
+    final markers = <ClientMarkerData>[];
+
+    for (var client in filteredClients) {
+      final locationData = client['LOCATION_DATA'] as List<dynamic>?;
+      if (locationData == null || locationData.isEmpty) continue;
+
+      final location = locationData[0];
+      final clientLat = (location['LATITUDE'] as num?)?.toDouble();
+      final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+
+      if (clientLat == null || clientLng == null) continue;
+
+      // Calculate distance from user
+      final distance = GeofenceHelper.calculateDistance(
+        _latitude!,
+        _longitude!,
+        clientLat,
+        clientLng,
+      );
+
+      markers.add(
+        ClientMarkerData(
+          clientGuid: client['CLIENT_GUID'] as String,
+          name: client['NAME'] as String? ?? 'Unknown',
+          abbreviation: client['ABBR'] as String? ?? 'N/A',
+          latitude: clientLat,
+          longitude: clientLng,
+          distance: distance,
+        ),
+      );
+    }
+
+    // debugPrint('📍 Prepared ${markers.length} client markers for map');
+    return markers;
   }
 
   void _startGeofenceMonitoringForClient(String? clientGuid) {
@@ -680,7 +727,27 @@ class _HomePageState extends State<HomePage> {
   // ===================== UI HELPERS =====================
 
   void _onJobTypeSelected(String jobType) {
-    setState(() => _selectedJobType = jobType);
+    setState(() {
+      _selectedJobType = jobType;
+
+      // ✨ FIX: Clear selected client if it's not in the new filtered list
+      // This prevents dropdown errors when switching between job types with different geofence filters
+      if (_selectedClient != null) {
+        final filteredClients = _getNearbyClients();
+        final clientExists = filteredClients.any(
+          (client) => client['CLIENT_GUID'] == _selectedClient,
+        );
+
+        if (!clientExists) {
+          debugPrint(
+            '⚠️ Selected client not in filtered list for $jobType, clearing selection',
+          );
+          _selectedClient = null;
+          _selectedProject = null;
+          _selectedContract = null;
+        }
+      }
+    });
     _updateFieldVisibility(jobType);
   }
 
@@ -889,11 +956,11 @@ class _HomePageState extends State<HomePage> {
               _buildTimeCard(),
               // const SizedBox(height: 10),
               _buildJobTypeButtons(attendance),
-              _buildLocationDisplay(),
               if (_selectedJobType.isNotEmpty) _buildForm(),
+              _buildLocationDisplay(),
               const SizedBox(height: 20),
               _buildClockButton(),
-              if (_isClockedIn) _buildGeofenceStatus(),
+              // if (_isClockedIn) _buildGeofenceStatus(),
               const SizedBox(height: 30),
             ],
           ),
@@ -1141,6 +1208,21 @@ class _HomePageState extends State<HomePage> {
   // }
 
   Widget _buildLocationDisplay() {
+    // ✨ Determine radius based on job type's geofence_filter setting
+    double? displayRadius;
+    if (_selectedJobType.isNotEmpty) {
+      final attendance = Provider.of<AttendanceProvider>(
+        context,
+        listen: false,
+      );
+      final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+      final shouldShowRadius = jobTypeConfig['geofence_filter'] ?? false;
+
+      if (shouldShowRadius) {
+        displayRadius = 1000.0; // Show 1000m radius when geofence is active
+      }
+    }
+
     return Column(
       children: [
         // 🗺️ Map display with refresh button inside
@@ -1148,14 +1230,16 @@ class _HomePageState extends State<HomePage> {
           LocationMapWidget(
             latitude: _latitude!,
             longitude: _longitude!,
-            height: 200,
-            showRefreshButton: true, // ✨ Refresh button inside map
+            height: 250,
+            showRefreshButton: true,
             onRefresh: _isLoading ? null : _getCurrentPosition,
+            clientMarkers: _getClientMarkersForMap(),
+            radiusInMeters: displayRadius, // ✨ NEW: Pass radius
           )
         else
           // Show placeholder when no location
           Container(
-            height: 200,
+            height: 250,
             margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             decoration: BoxDecoration(
               color: Colors.grey.shade100,
@@ -1303,6 +1387,19 @@ class _HomePageState extends State<HomePage> {
       );
     }
 
+    // ✨ FIX: Validate that value exists in items list
+    // If the value is not in the list, set it to null to prevent dropdown errors
+    String? validatedValue = value;
+    if (value != null) {
+      final valueExists = items.any((item) => item[valueKey] == value);
+      if (!valueExists) {
+        debugPrint(
+          '⚠️ Dropdown value $value not found in items, setting to null',
+        );
+        validatedValue = null;
+      }
+    }
+
     return Container(
       margin: const EdgeInsets.only(bottom: 15),
       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -1314,7 +1411,7 @@ class _HomePageState extends State<HomePage> {
         isExpanded: true,
         underline: const SizedBox(),
         hint: Text('Select $label'),
-        value: value,
+        value: validatedValue,
         items: items
             .map(
               (item) => DropdownMenuItem<String>(

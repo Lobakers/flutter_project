@@ -27,7 +27,7 @@ class AutoClockOutService {
   final int _requiredViolations = 2; // Must be outside 3 times in a row
 
   AutoClockOutService({
-    this.checkInterval = const Duration(minutes: 1),
+    this.checkInterval = const Duration(minutes: 3),
     this.radiusInMeters = 500.0,
     this.onLeaveGeofence,
   });

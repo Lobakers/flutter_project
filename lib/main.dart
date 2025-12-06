@@ -6,6 +6,10 @@ import 'package:beewhere/pages/report_page.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/services/logger_service.dart';
+import 'package:beewhere/services/offline_database.dart';
+import 'package:beewhere/services/pending_sync_service.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:beewhere/services/sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -15,6 +19,12 @@ void main() async {
 
   // Initialize logger service
   await LoggerService.init();
+
+  // Initialize offline services
+  await OfflineDatabase.init();
+  await PendingSyncService.init();
+  ConnectivityService.init();
+  SyncService.init();
 
   runApp(
     MultiProvider(
