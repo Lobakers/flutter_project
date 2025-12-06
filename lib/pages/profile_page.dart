@@ -1,3 +1,4 @@
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:beewhere/pages/login_page.dart';
 import 'package:beewhere/pages/log_viewer_page.dart';
 import 'package:beewhere/pages/web_view_page.dart';
@@ -190,11 +191,11 @@ class _ProfilePageState extends State<ProfilePage> {
         child: Column(
           children: [
             const SizedBox(height: 20),
-            _buildInfoSection(userId),
+            // _buildInfoSection(userId),
             // const SizedBox(height: 20),
             // _buildSettingsSection(),
             // const SizedBox(height: 20),
-            // _buildAboutSection(),
+            _buildAboutSection(),
             const SizedBox(height: 30),
             _buildLogoutButton(),
             const SizedBox(height: 30),
@@ -360,17 +361,33 @@ class _ProfilePageState extends State<ProfilePage> {
             icon: Icons.privacy_tip,
             title: 'Privacy Policy',
             subtitle: 'View our privacy policy',
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const WebViewPage(
-                    url:
-                        'https://beesuite-docs.readthedocs.io/privacy_policy.html',
-                    title: 'Privacy Policy',
+            onTap: () async {
+              final connectivityResult = await Connectivity()
+                  .checkConnectivity();
+              if (connectivityResult == ConnectivityResult.none) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'No internet connection. Cannot open Privacy Policy.',
+                      ),
+                    ),
+                  );
+                }
+                return;
+              }
+              if (context.mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const WebViewPage(
+                      url:
+                          'https://beesuite-docs.readthedocs.io/privacy_policy.html',
+                      title: 'Privacy Policy',
+                    ),
                   ),
-                ),
-              );
+                );
+              }
             },
           ),
           const Divider(height: 1, indent: 60),
@@ -378,17 +395,33 @@ class _ProfilePageState extends State<ProfilePage> {
             icon: Icons.description,
             title: 'Terms of Service',
             subtitle: 'View terms and conditions',
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const WebViewPage(
-                    url:
-                        'https://beesuite-docs.readthedocs.io/terms_and_conditions.html',
-                    title: 'Terms of Service',
+            onTap: () async {
+              final connectivityResult = await Connectivity()
+                  .checkConnectivity();
+              if (connectivityResult == ConnectivityResult.none) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'No internet connection. Cannot open Terms of Service.',
+                      ),
+                    ),
+                  );
+                }
+                return;
+              }
+              if (context.mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const WebViewPage(
+                      url:
+                          'https://beesuite-docs.readthedocs.io/terms_and_conditions.html',
+                      title: 'Terms of Service',
+                    ),
                   ),
-                ),
-              );
+                );
+              }
             },
           ),
         ],
