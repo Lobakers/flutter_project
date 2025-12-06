@@ -1,14 +1,17 @@
-import 'package:beewhere/controller/api_service.dart';
+import 'dart:convert';
 import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/services/pending_sync_service.dart';
+import 'package:beewhere/services/storage_service.dart';
 import 'package:beewhere/services/logger_service.dart';
-import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 /// Service to sync pending offline actions
+/// Works without BuildContext by using direct HTTP calls
 class SyncService {
   static bool _isSyncing = false;
   static int _syncedCount = 0;
   static int _failedCount = 0;
+  static const String _baseUrl = 'https://devamscore.beesuite.app';
 
   /// Check if currently syncing
   static bool get isSyncing => _isSyncing;
@@ -22,15 +25,13 @@ class SyncService {
   /// Initialize sync service - register with connectivity service
   static void init() {
     ConnectivityService.registerSyncCallback(() {
-      syncPendingActions(null); // No context needed for background sync
+      syncPendingActions(); // Auto-sync when connection restored
     });
     LoggerService.info('✅ SyncService initialized', tag: 'SyncService');
   }
 
-  /// Manually trigger sync (with context for UI feedback)
-  static Future<Map<String, dynamic>> syncPendingActions(
-    BuildContext? context,
-  ) async {
+  /// Sync all pending actions (works without context)
+  static Future<Map<String, dynamic>> syncPendingActions() async {
     if (_isSyncing) {
       LoggerService.info('⚠️ Sync already in progress', tag: 'SyncService');
       return {'success': false, 'message': 'Sync already in progress'};
@@ -48,6 +49,14 @@ class SyncService {
     try {
       LoggerService.info('🔄 Starting sync...', tag: 'SyncService');
 
+      // Get auth token
+      final token = await StorageService.getToken();
+      if (token == null) {
+        LoggerService.error('No auth token found', tag: 'SyncService');
+        _isSyncing = false;
+        return {'success': false, 'message': 'No auth token'};
+      }
+
       final pendingActions = await PendingSyncService.getPendingActions();
       LoggerService.info(
         '📋 Found ${pendingActions.length} pending actions',
@@ -62,7 +71,8 @@ class SyncService {
       // Process each pending action
       for (var action in pendingActions) {
         final actionType = action['action_type'];
-        final payload = action['payload'];
+        final payload =
+            action['payload'] as Map<String, dynamic>; // Already decoded
         final actionId = action['id'];
 
         LoggerService.info(
@@ -76,20 +86,25 @@ class SyncService {
           // Route to appropriate API based on action type
           switch (actionType) {
             case 'clock_in':
-              success = await _syncClockIn(context, payload);
+              final result = await _syncClockIn(token, payload);
+              success = result['success'] == true;
+
+              // ✨ If clock-in succeeded, update local cache and pending clock-outs
+              if (success && result['realGuid'] != null) {
+                final realGuid = result['realGuid'];
+
+                // Update any pending clock-out actions that reference temp GUID
+                await _updatePendingClockOutReferences(
+                  pendingActions: pendingActions,
+                  realGuid: realGuid,
+                );
+              }
               break;
             case 'clock_out':
-              success = await _syncClockOut(context, payload);
+              success = await _syncClockOut(token, payload);
               break;
             case 'update_activity':
-              success = await _syncUpdateActivity(context, payload);
-              break;
-            case 'edit_time_request':
-              // TODO: Implement when needed
-              LoggerService.info(
-                '⚠️ edit_time_request sync not yet implemented',
-                tag: 'SyncService',
-              );
+              success = await _syncUpdateActivity(token, payload);
               break;
             default:
               LoggerService.error(
@@ -138,92 +153,116 @@ class SyncService {
     }
   }
 
-  /// Sync clock in action
-  static Future<bool> _syncClockIn(
-    BuildContext? context,
+  /// Sync clock in action using direct HTTP call
+  /// Returns Map with 'success' and optionally 'realGuid' and 'clockTime'
+  static Future<Map<String, dynamic>> _syncClockIn(
+    String token,
     Map<String, dynamic> payload,
   ) async {
     try {
-      // If no context, we can't make API calls that require it
-      if (context == null) {
+      LoggerService.debug(
+        'Syncing clock in: ${jsonEncode(payload)}',
+        tag: 'SyncService',
+      );
+
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/clock/transaction'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'JWT $token',
+        },
+        body: jsonEncode({
+          "userGuid": payload['userGuid'],
+          "clockTime": DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          "clockType": 0,
+          "sourceID": 1,
+          "jobType": payload['jobType'],
+          "location": payload['location'],
+          "clientId": payload['clientId'] ?? "",
+          "projectGuid": payload['projectGuid'] ?? "",
+          "contractId": payload['contractId'] ?? "",
+          "userAgent": payload['userAgent'],
+          "activity": payload['activity'],
+        }),
+      );
+
+      if (response.statusCode == 201) {
+        final data = jsonDecode(response.body);
+        final realGuid = data[0]['CLOCK_LOG_GUID'];
+        final clockTime = data[0]['CLOCK_TIME'];
+
         LoggerService.info(
-          '⚠️ No context for clock in sync, will retry later',
+          '✅ Clock in synced successfully. Real GUID: $realGuid',
           tag: 'SyncService',
         );
-        return false;
+
+        // Return the real GUID so we can update local cache
+        return {'success': true, 'realGuid': realGuid, 'clockTime': clockTime};
+      } else {
+        LoggerService.error(
+          'Clock in sync failed: ${response.statusCode} - ${response.body}',
+          tag: 'SyncService',
+        );
+        return {'success': false};
       }
-
-      // Extract payload data
-      final userGuid = payload['userGuid'];
-      final jobType = payload['jobType'];
-      final location = payload['location'];
-      final clientId = payload['clientId'];
-      final projectGuid = payload['projectGuid'];
-      final contractId = payload['contractId'];
-      final userAgent = payload['userAgent'];
-      final activity = payload['activity'];
-
-      // Call the API directly (bypass offline check)
-      final body = {
-        "userGuid": userGuid,
-        "clockTime": DateTime.now().millisecondsSinceEpoch ~/ 1000,
-        "clockType": 0,
-        "sourceID": 1,
-        "jobType": jobType,
-        "location": location,
-        "clientId": clientId ?? "",
-        "projectGuid": projectGuid ?? "",
-        "contractId": contractId ?? "",
-        "userAgent": userAgent,
-        "activity": activity,
-      };
-
-      final response = await ApiService.post(context, '/api/clock', body);
-
-      return response.statusCode == 201;
     } catch (e) {
       LoggerService.error(
         'Error syncing clock in',
         tag: 'SyncService',
         error: e,
       );
-      return false;
+      return {'success': false};
     }
   }
 
-  /// Sync clock out action
+  /// Sync clock out action using direct HTTP call
   static Future<bool> _syncClockOut(
-    BuildContext? context,
+    String token,
     Map<String, dynamic> payload,
   ) async {
     try {
-      if (context == null) {
+      LoggerService.debug(
+        'Syncing clock out: ${jsonEncode(payload)}',
+        tag: 'SyncService',
+      );
+
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/clock/transaction'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'JWT $token',
+        },
+        body: jsonEncode({
+          "userGuid": payload['userGuid'],
+          "clockTime": DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          "clockType": 1,
+          "sourceID": 1,
+          "jobType": payload['jobType'],
+          "location": payload['location'],
+          "clientId": payload['clientId'] ?? "",
+          "projectGuid": payload['projectGuid'] ?? "",
+          "contractId": payload['contractId'] ?? "",
+          "userAgent": payload['userAgent'],
+          "activity": payload['activity'],
+          "clockRefGuid": payload['clockRefGuid'],
+        }),
+      );
+
+      if (response.statusCode == 201) {
         LoggerService.info(
-          '⚠️ No context for clock out sync, will retry later',
+          '✅ Clock out synced successfully',
+          tag: 'SyncService',
+        );
+        return true;
+      } else {
+        LoggerService.error(
+          'Clock out sync failed: ${response.statusCode} - ${response.body}',
           tag: 'SyncService',
         );
         return false;
       }
-
-      // Call the API directly
-      final body = {
-        "userGuid": payload['userGuid'],
-        "clockTime": DateTime.now().millisecondsSinceEpoch ~/ 1000,
-        "clockType": 1,
-        "sourceID": 1,
-        "jobType": payload['jobType'],
-        "location": payload['location'],
-        "clientId": payload['clientId'] ?? "",
-        "projectGuid": payload['projectGuid'] ?? "",
-        "contractId": payload['contractId'] ?? "",
-        "userAgent": payload['userAgent'],
-        "activity": payload['activity'],
-        "clockRefGuid": payload['clockRefGuid'],
-      };
-
-      final response = await ApiService.post(context, '/api/clock', body);
-
-      return response.statusCode == 201;
     } catch (e) {
       LoggerService.error(
         'Error syncing clock out',
@@ -234,38 +273,42 @@ class SyncService {
     }
   }
 
-  /// Sync update activity action
+  /// Sync update activity action using direct HTTP call
   static Future<bool> _syncUpdateActivity(
-    BuildContext? context,
+    String token,
     Map<String, dynamic> payload,
   ) async {
     try {
-      if (context == null) {
+      LoggerService.debug(
+        'Syncing activity update: ${jsonEncode(payload)}',
+        tag: 'SyncService',
+      );
+
+      final response = await http.patch(
+        Uri.parse('$_baseUrl/api/clock/activity'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'JWT $token',
+        },
+        body: jsonEncode({
+          'clockLogGuid': payload['clockLogGuid'],
+          'activity': payload['activity'],
+        }),
+      );
+
+      if (response.statusCode == 200) {
         LoggerService.info(
-          '⚠️ No context for activity update sync, will retry later',
+          '✅ Activity update synced successfully',
+          tag: 'SyncService',
+        );
+        return true;
+      } else {
+        LoggerService.error(
+          'Activity update sync failed: ${response.statusCode} - ${response.body}',
           tag: 'SyncService',
         );
         return false;
       }
-
-      final clockLogGuid = payload['clockLogGuid'];
-      final activities = payload['activity'] as List<dynamic>;
-
-      // Convert to proper format
-      final activitiesList = activities
-          .map((a) => a as Map<String, dynamic>)
-          .toList();
-
-      // Call the API directly
-      final body = {'clockLogGuid': clockLogGuid, 'activity': activitiesList};
-
-      final response = await ApiService.patch(
-        context,
-        '/api/clock/activity',
-        body,
-      );
-
-      return response.statusCode == 200;
     } catch (e) {
       LoggerService.error(
         'Error syncing activity update',
@@ -273,6 +316,44 @@ class SyncService {
         error: e,
       );
       return false;
+    }
+  }
+
+  /// Update pending clock_out actions to use real GUID instead of temp GUID
+  static Future<void> _updatePendingClockOutReferences({
+    required List<Map<String, dynamic>> pendingActions,
+    required String realGuid,
+  }) async {
+    try {
+      for (var action in pendingActions) {
+        if (action['action_type'] == 'clock_out') {
+          final payload =
+              action['payload'] as Map<String, dynamic>; // Already decoded
+          final clockRefGuid = payload['clockRefGuid'];
+
+          // If this clock_out references a temp GUID, update it with real GUID
+          if (clockRefGuid != null &&
+              clockRefGuid.toString().startsWith('temp_')) {
+            LoggerService.info(
+              '🔄 Updating clock_out reference from $clockRefGuid to $realGuid',
+              tag: 'SyncService',
+            );
+
+            payload['clockRefGuid'] = realGuid;
+
+            await PendingSyncService.updatePendingAction(
+              actionId: action['id'],
+              payload: payload,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      LoggerService.error(
+        'Error updating pending clock_out references',
+        tag: 'SyncService',
+        error: e,
+      );
     }
   }
 }

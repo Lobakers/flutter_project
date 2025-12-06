@@ -1,7 +1,8 @@
 import 'dart:async';
+import 'package:beewhere/controller/geofence_helper.dart';
+import 'package:beewhere/config/geofence_config.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:beewhere/controller/geofence_helper.dart';
 
 /// Callback when user leaves the geofence area
 typedef OnLeaveGeofence = Future<void> Function(double distance);
@@ -28,7 +29,7 @@ class AutoClockOutService {
 
   AutoClockOutService({
     this.checkInterval = const Duration(minutes: 3),
-    this.radiusInMeters = 500.0,
+    this.radiusInMeters = GeofenceConfig.autoClockOutRadius,
     this.onLeaveGeofence,
   });
 

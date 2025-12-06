@@ -5,9 +5,10 @@ import 'package:beewhere/controller/geofence_helper.dart';
 import 'package:beewhere/services/logger_service.dart';
 import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/services/storage_service.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:beewhere/services/pending_sync_service.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
-
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:http/http.dart' as http;
 
@@ -280,7 +281,65 @@ class GeofenceTaskHandler extends TaskHandler {
         );
       }
 
-      // Call clock-out API
+      // Prepare clock out payload
+      final clockOutPayload = {
+        'userGuid': userGuid,
+        'clockTime': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        'clockType': 1, // Clock OUT
+        'sourceID': 1,
+        'jobType': state?['jobType'] ?? 'Office',
+        'location': {
+          'lat': position.latitude,
+          'long': position.longitude,
+          'name': address,
+        },
+        'clientId': state?['clientId'] ?? '',
+        'projectGuid': state?['projectId'] ?? '',
+        'contractId': state?['contractId'] ?? '',
+        'userAgent': {
+          'description': deviceDescription,
+          'publicIP': '0.0.0.0',
+          'deviceID': deviceId,
+        },
+        'activity': {'name': '', 'statusFlag': 'true'},
+        'clockRefGuid': clockRefGuid,
+      };
+
+      // Check if online
+      final isOnline = await ConnectivityService.checkConnectivity();
+
+      if (!isOnline) {
+        // OFFLINE: Queue for later sync
+        LoggerService.info(
+          '📱 Auto clock-out queued (offline)',
+          tag: 'GeofenceTaskHandler',
+        );
+
+        await PendingSyncService.addPendingAction(
+          actionType: 'clock_out',
+          payload: clockOutPayload,
+        );
+
+        // Show notification
+        await NotificationService.showAutoClockOutNotification(
+          distance: distance,
+          location: location,
+        );
+
+        // Clear clock-in state
+        await StorageService.clearClockInState();
+
+        // Stop tracking
+        await FlutterForegroundTask.stopService();
+
+        LoggerService.info(
+          '✅ Auto clock-out queued successfully (will sync when online)',
+          tag: 'GeofenceTaskHandler',
+        );
+        return;
+      }
+
+      // ONLINE: Call clock-out API directly
       LoggerService.info('Calling clock-out API', tag: 'GeofenceTaskHandler');
 
       final token = await StorageService.getToken();
@@ -295,28 +354,7 @@ class GeofenceTaskHandler extends TaskHandler {
           'Content-Type': 'application/json',
           'Authorization': 'JWT $token',
         },
-        body: jsonEncode({
-          'userGuid': userGuid,
-          'clockTime': DateTime.now().millisecondsSinceEpoch ~/ 1000,
-          'clockType': 1, // Clock OUT
-          'sourceID': 1,
-          'jobType': state?['jobType'] ?? 'Office',
-          'location': {
-            'lat': position.latitude,
-            'long': position.longitude,
-            'name': address,
-          },
-          'clientId': state?['clientId'] ?? '',
-          'projectGuid': state?['projectId'] ?? '',
-          'contractId': state?['contractId'] ?? '',
-          'userAgent': {
-            'description': deviceDescription,
-            'publicIP': '0.0.0.0',
-            'deviceID': deviceId,
-          },
-          'activity': {'name': '', 'statusFlag': 'true'},
-          'clockRefGuid': clockRefGuid,
-        }),
+        body: jsonEncode(clockOutPayload),
       );
 
       if (response.statusCode == 201) {

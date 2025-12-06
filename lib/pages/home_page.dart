@@ -21,6 +21,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:slide_to_act/slide_to_act.dart';
 import 'package:beewhere/widgets/location_map_widget.dart';
+import 'package:beewhere/config/geofence_config.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -86,7 +87,7 @@ class _HomePageState extends State<HomePage> {
     // ✨ FIX: Initialize here safely
     _autoClockOutService = AutoClockOutService(
       checkInterval: const Duration(seconds: 15),
-      radiusInMeters: 250.0,
+      radiusInMeters: GeofenceConfig.autoClockOutRadius,
       // radiusInMeters: 10.0, //testing purpose
       onLeaveGeofence: _onUserLeftGeofence,
     );
@@ -442,7 +443,9 @@ class _HomePageState extends State<HomePage> {
         clientLng,
       );
 
-      return distance <= 1000.0; // Only include clients within 1000m
+      return distance <=
+          GeofenceConfig
+              .clientFilterRadius; // Only include clients within configured radius
     }).toList();
 
     // debugPrint(
@@ -571,7 +574,8 @@ class _HomePageState extends State<HomePage> {
         targetLat: targetLat,
         targetLng: targetLng,
         targetAddress: targetAddress ?? 'Work Location',
-        radiusInMeters: 250.0, // Match foreground radius
+        radiusInMeters:
+            GeofenceConfig.autoClockOutRadius, // Match foreground radius
         clockRefGuid: _clockRefGuid!,
       );
 
@@ -1219,7 +1223,8 @@ class _HomePageState extends State<HomePage> {
       final shouldShowRadius = jobTypeConfig['geofence_filter'] ?? false;
 
       if (shouldShowRadius) {
-        displayRadius = 1000.0; // Show 1000m radius when geofence is active
+        displayRadius = GeofenceConfig
+            .mapDisplayRadius; // Show radius when geofence is active
       }
     }
 
@@ -1373,7 +1378,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'No clients found within 100m of your location. Try refreshing your location or move closer to a client site.',
+                    GeofenceConfig.noClientsFoundMessage,
                     style: TextStyle(
                       fontSize: 12,
                       color: Colors.orange.shade800,

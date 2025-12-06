@@ -139,6 +139,27 @@ class PendingSyncService {
     }
   }
 
+  /// Update a pending action's payload
+  static Future<void> updatePendingAction({
+    required int actionId,
+    required Map<String, dynamic> payload,
+  }) async {
+    if (_database == null) return;
+
+    try {
+      await _database!.update(
+        'pending_sync',
+        {'payload': jsonEncode(payload)},
+        where: 'id = ?',
+        whereArgs: [actionId],
+      );
+
+      debugPrint('✅ Updated pending action $actionId');
+    } catch (e) {
+      debugPrint('❌ Failed to update pending action: $e');
+    }
+  }
+
   /// Clear all pending actions (use with caution)
   static Future<void> clearAll() async {
     if (_database == null) return;

@@ -190,7 +190,7 @@ class _ProfilePageState extends State<ProfilePage> {
         child: Column(
           children: [
             const SizedBox(height: 20),
-            // _buildInfoSection(userId),
+            _buildInfoSection(userId),
             // const SizedBox(height: 20),
             // _buildSettingsSection(),
             // const SizedBox(height: 20),
