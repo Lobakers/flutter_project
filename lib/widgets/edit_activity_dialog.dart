@@ -3,8 +3,13 @@ import 'package:flutter/material.dart';
 
 class EditActivityDialog extends StatefulWidget {
   final String clockGuid;
+  final List<dynamic>? initialActivities;
 
-  const EditActivityDialog({super.key, required this.clockGuid});
+  const EditActivityDialog({
+    super.key,
+    required this.clockGuid,
+    this.initialActivities,
+  });
 
   @override
   State<EditActivityDialog> createState() => _EditActivityDialogState();
@@ -23,6 +28,28 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
   }
 
   Future<void> _loadActivities() async {
+    // If we have initial activities, use them directly (Offline support)
+    if (widget.initialActivities != null) {
+      setState(() {
+        _clockLogGuid = widget.clockGuid;
+        // Populate controllers
+        _activityControllers = (widget.initialActivities!)
+            .map(
+              (e) => TextEditingController(
+                text: (e is Map ? e['name'] : e).toString(),
+              ),
+            )
+            .toList();
+
+        if (_activityControllers.isEmpty) {
+          _activityControllers.add(TextEditingController());
+        }
+        _isLoading = false;
+      });
+      return;
+    }
+
+    // Otherwise fetch from API (Online behavior)
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -33,7 +60,6 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
     if (mounted) {
       if (result['success']) {
         final data = result['data'];
-        // API returns an array, take first element
         final recordData = data is List ? data[0] : data;
 
         setState(() {
@@ -42,14 +68,12 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
           final activityData =
               recordData['ACTIVITY'] ?? recordData['activity'] ?? [];
 
-          // Create text controllers for each activity
           _activityControllers = (activityData as List)
               .map(
                 (e) => TextEditingController(text: e['name']?.toString() ?? ''),
               )
               .toList();
 
-          // If no activities exist, add one empty field
           if (_activityControllers.isEmpty) {
             _activityControllers.add(TextEditingController());
           }

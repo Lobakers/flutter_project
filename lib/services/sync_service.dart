@@ -106,6 +106,9 @@ class SyncService {
             case 'update_activity':
               success = await _syncUpdateActivity(token, payload);
               break;
+            case 'submit_time_request':
+              success = await _syncSubmitTimeRequest(token, payload);
+              break;
             default:
               LoggerService.error(
                 'Unknown action type: $actionType',
@@ -319,38 +322,94 @@ class SyncService {
     }
   }
 
-  /// Update pending clock_out actions to use real GUID instead of temp GUID
+  /// Sync submit time request action using direct HTTP call
+  static Future<bool> _syncSubmitTimeRequest(
+    String token,
+    Map<String, dynamic> payload,
+  ) async {
+    try {
+      LoggerService.debug(
+        'Syncing time request: ${jsonEncode(payload)}',
+        tag: 'SyncService',
+      );
+
+      final response = await http.post(
+        Uri.parse('$_baseUrl/support'), // Correct URL (no /api)
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'JWT $token',
+        },
+        body: jsonEncode(payload),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        LoggerService.info(
+          '✅ Time request synced successfully',
+          tag: 'SyncService',
+        );
+        return true;
+      } else {
+        LoggerService.error(
+          'Time request sync failed: ${response.statusCode} - ${response.body}',
+          tag: 'SyncService',
+        );
+        return false;
+      }
+    } catch (e) {
+      LoggerService.error(
+        'Error syncing time request',
+        tag: 'SyncService',
+        error: e,
+      );
+      return false;
+    }
+  }
+
+  /// Update pending actions (any type) to use real GUID instead of temp GUID
+  /// This scans all pending actions and replaces references
   static Future<void> _updatePendingClockOutReferences({
     required List<Map<String, dynamic>> pendingActions,
     required String realGuid,
   }) async {
     try {
       for (var action in pendingActions) {
-        if (action['action_type'] == 'clock_out') {
-          final payload =
-              action['payload'] as Map<String, dynamic>; // Already decoded
-          final clockRefGuid = payload['clockRefGuid'];
+        bool updated = false;
+        final payload =
+            action['payload'] as Map<String, dynamic>; // Already decoded
+        final actionType = action['action_type'];
 
-          // If this clock_out references a temp GUID, update it with real GUID
-          if (clockRefGuid != null &&
-              clockRefGuid.toString().startsWith('temp_')) {
-            LoggerService.info(
-              '🔄 Updating clock_out reference from $clockRefGuid to $realGuid',
-              tag: 'SyncService',
-            );
-
+        // 1. Check clockRefGuid (used in clock_out)
+        if (payload.containsKey('clockRefGuid')) {
+          final ref = payload['clockRefGuid'];
+          if (ref != null && ref.toString().startsWith('temp_')) {
             payload['clockRefGuid'] = realGuid;
-
-            await PendingSyncService.updatePendingAction(
-              actionId: action['id'],
-              payload: payload,
-            );
+            updated = true;
           }
+        }
+
+        // 2. Check clockLogGuid (used in update_activity)
+        if (payload.containsKey('clockLogGuid')) {
+          final ref = payload['clockLogGuid'];
+          if (ref != null && ref.toString().startsWith('temp_')) {
+            payload['clockLogGuid'] = realGuid;
+            updated = true;
+          }
+        }
+
+        if (updated) {
+          LoggerService.info(
+            '🔄 Updated $actionType reference to real GUID: $realGuid',
+            tag: 'SyncService',
+          );
+          await PendingSyncService.updatePendingAction(
+            actionId: action['id'],
+            payload: payload,
+          );
         }
       }
     } catch (e) {
       LoggerService.error(
-        'Error updating pending clock_out references',
+        'Error updating pending references',
         tag: 'SyncService',
         error: e,
       );

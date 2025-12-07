@@ -218,35 +218,65 @@ class HistoryApi {
     required String description,
     String? supportingDoc,
   }) async {
+    final payload = {
+      'requestType': 'clocks',
+      'subject': 'Wrong clock out time',
+      'starttime': startTime,
+      'endtime': endTime,
+      'supportingDoc': supportingDoc ?? '',
+      'description': description,
+      'userGuid': userGuid,
+      'userEmail': userEmail,
+    };
+
     try {
-      final url = Api.support;
-      final payload = {
-        'requestType': 'clocks',
-        'subject': 'Wrong clock out time',
-        'starttime': startTime,
-        'endtime': endTime,
-        'supportingDoc': supportingDoc ?? '',
-        'description': description,
-        'userGuid': userGuid,
-        'userEmail': userEmail,
-      };
+      final isOnline = await ConnectivityService.checkConnectivity();
 
-      debugPrint('📋 SubmitTimeRequest Request: $url');
-      debugPrint('   Payload: ${jsonEncode(payload)}');
+      if (isOnline) {
+        final url = Api.support;
+        debugPrint('📋 SubmitTimeRequest Request: $url');
+        debugPrint('   Payload: ${jsonEncode(payload)}');
 
-      final response = await ApiService.post(context, url, payload);
+        final response = await ApiService.post(context, url, payload);
 
-      debugPrint('📋 SubmitTimeRequest Response: ${response.statusCode}');
+        debugPrint('📋 SubmitTimeRequest Response: ${response.statusCode}');
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        debugPrint('✅ SubmitTimeRequest Success');
-        return {'success': true, 'message': 'Request submitted successfully'};
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          debugPrint('✅ SubmitTimeRequest Success');
+          return {'success': true, 'message': 'Request submitted successfully'};
+        } else {
+          debugPrint('❌ SubmitTimeRequest Failed: ${response.statusCode}');
+          return {'success': false, 'message': 'Failed to submit request'};
+        }
       } else {
-        debugPrint('❌ SubmitTimeRequest Failed: ${response.statusCode}');
-        return {'success': false, 'message': 'Failed to submit request'};
+        // OFFLINE: Queue for later sync
+        await PendingSyncService.addPendingAction(
+          actionType: 'submit_time_request',
+          payload: payload,
+        );
+        debugPrint('📱 SubmitTimeRequest queued for offline sync');
+        return {
+          'success': true,
+          'message': 'Saved offline. Will sync when online.',
+        };
       }
     } catch (e) {
       debugPrint('❌ SubmitTimeRequest Exception: $e');
+
+      // On error, queue for offline sync
+      try {
+        await PendingSyncService.addPendingAction(
+          actionType: 'submit_time_request',
+          payload: payload,
+        );
+        return {
+          'success': true,
+          'message': 'Saved offline due to error. Will sync when online.',
+        };
+      } catch (queueError) {
+        debugPrint('❌ Failed to queue time request: $queueError');
+      }
+
       return {'success': false, 'message': 'Network error: $e'};
     }
   }

@@ -7,8 +7,15 @@ import 'package:intl/intl.dart';
 
 class EditTimeRequestDialog extends StatefulWidget {
   final String clockGuid;
+  final String? initialClockInTime;
+  final String? initialClockOutTime;
 
-  const EditTimeRequestDialog({super.key, required this.clockGuid});
+  const EditTimeRequestDialog({
+    super.key,
+    required this.clockGuid,
+    this.initialClockInTime,
+    this.initialClockOutTime,
+  });
 
   @override
   State<EditTimeRequestDialog> createState() => _EditTimeRequestDialogState();
@@ -31,6 +38,30 @@ class _EditTimeRequestDialogState extends State<EditTimeRequestDialog> {
   }
 
   Future<void> _loadClockDetails() async {
+    // If initial times provided, use them directly (Offline support)
+    if (widget.initialClockInTime != null ||
+        widget.initialClockOutTime != null) {
+      try {
+        if (widget.initialClockInTime != null) {
+          _startTime = DateTime.parse(widget.initialClockInTime!);
+        }
+        if (widget.initialClockOutTime != null) {
+          _endTime = DateTime.parse(widget.initialClockOutTime!);
+        }
+        setState(() {
+          _isLoading = false;
+        });
+      } catch (e) {
+        // Fallback to API if parsing fails
+        debugPrint('Error parsing initial times: $e');
+      }
+
+      if (_startTime != null || _endTime != null) {
+        return; // Successfully loaded from initial data
+      }
+    }
+
+    // Otherwise fetch from API (Online behavior)
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -41,25 +72,19 @@ class _EditTimeRequestDialogState extends State<EditTimeRequestDialog> {
     if (mounted) {
       if (result['success']) {
         final data = result['data'];
-        // API returns an array, take first element
         final recordData = data is List ? data[0] : data;
 
         try {
-          // Parse times and add 8 hours as per requirement
           final clockInStr =
               recordData['CLOCK_IN_TIME'] ?? recordData['clockInTime'];
           final clockOutStr =
               recordData['CLOCK_OUT_TIME'] ?? recordData['clockOutTime'];
 
           if (clockInStr != null) {
-            _startTime = DateTime.parse(
-              clockInStr,
-            ).add(const Duration(hours: 8));
+            _startTime = DateTime.parse(clockInStr);
           }
           if (clockOutStr != null) {
-            _endTime = DateTime.parse(
-              clockOutStr,
-            ).add(const Duration(hours: 8));
+            _endTime = DateTime.parse(clockOutStr);
           }
 
           setState(() {

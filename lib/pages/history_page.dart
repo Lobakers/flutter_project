@@ -163,15 +163,23 @@ class _HistoryPageState extends State<HistoryPage> {
   Future<void> _showEditActivityDialog(Map<String, dynamic> record) async {
     final clockGuid = record['CLOCK_LOG_GUID'] ?? record['clockLogGuid'];
     if (clockGuid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot edit: missing clock ID')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot edit: missing clock ID')),
+        );
+      }
       return;
     }
 
+    // Extract activities to pass to dialog
+    final activities = record['ACTIVITY'] as List<dynamic>?;
+
     final result = await showDialog<bool>(
       context: context,
-      builder: (context) => EditActivityDialog(clockGuid: clockGuid),
+      builder: (context) => EditActivityDialog(
+        clockGuid: clockGuid,
+        initialActivities: activities,
+      ),
     );
 
     if (result == true) {
@@ -182,22 +190,36 @@ class _HistoryPageState extends State<HistoryPage> {
   Future<void> _showEditTimeDialog(Map<String, dynamic> record) async {
     final clockGuid = record['CLOCK_LOG_GUID'] ?? record['clockLogGuid'];
     if (clockGuid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot edit: missing clock ID')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot edit: missing clock ID')),
+        );
+      }
       return;
     }
 
+    // Extract times to pass to dialog
+    final clockInTime =
+        record['CLOCK_IN_TIME'] ?? record['clockInTime'] as String?;
+    final clockOutTime =
+        record['CLOCK_OUT_TIME'] ?? record['clockOutTime'] as String?;
+
     final result = await showDialog<bool>(
       context: context,
-      builder: (context) => EditTimeRequestDialog(clockGuid: clockGuid),
+      builder: (context) => EditTimeRequestDialog(
+        clockGuid: clockGuid,
+        initialClockInTime: clockInTime,
+        initialClockOutTime: clockOutTime,
+      ),
     );
 
     if (result == true) {
-      // Optionally refresh
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Your request has been submitted')),
-      );
+      if (mounted) {
+        // Optionally refresh or show message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Your request has been submitted')),
+        );
+      }
     }
   }
 
