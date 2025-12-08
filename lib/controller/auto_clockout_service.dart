@@ -8,7 +8,10 @@ import 'package:geolocator/geolocator.dart';
 typedef OnLeaveGeofence = Future<void> Function(double distance);
 
 class AutoClockOutService {
-  Timer? _timer;
+  StreamSubscription<Position>? _positionStreamSubscription;
+  final StreamController<Map<String, dynamic>> _statusController =
+      StreamController<Map<String, dynamic>>.broadcast();
+
   bool _isMonitoring = false;
 
   // Target location (client/site location)
@@ -22,6 +25,9 @@ class AutoClockOutService {
 
   // Callback when user exits geofence
   OnLeaveGeofence? onLeaveGeofence;
+
+  // Stream for UI updates
+  Stream<Map<String, dynamic>> get statusStream => _statusController.stream;
 
   // ✨ NEW: GPS drift protection
   int _violationCount = 0;
@@ -61,17 +67,27 @@ class AutoClockOutService {
     debugPrint('   Check interval: ${checkInterval.inSeconds}s');
     debugPrint('   Required violations: $_requiredViolations');
 
-    // Start periodic check
-    _timer = Timer.periodic(checkInterval, (_) => _checkLocation());
+    // Start stream
+    final locationSettings = LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 5, // Update every 5 meters
+    );
 
-    // Also check immediately
-    _checkLocation();
+    _positionStreamSubscription =
+        Geolocator.getPositionStream(locationSettings: locationSettings).listen(
+          (Position position) {
+            _checkLocation(position);
+          },
+          onError: (e) {
+            debugPrint('❌ Location stream error: $e');
+          },
+        );
   }
 
   /// Stop monitoring
   void stopMonitoring() {
-    _timer?.cancel();
-    _timer = null;
+    _positionStreamSubscription?.cancel();
+    _positionStreamSubscription = null;
     _isMonitoring = false;
     _targetLat = null;
     _targetLng = null;
@@ -81,17 +97,12 @@ class AutoClockOutService {
   }
 
   /// Check current location against target
-  Future<void> _checkLocation() async {
+  Future<void> _checkLocation(Position position) async {
     if (!_isMonitoring || _targetLat == null || _targetLng == null) {
       return;
     }
 
     try {
-      // Get current position
-      Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-
       debugPrint(
         '📍 Current location: ${position.latitude}, ${position.longitude}',
       );
@@ -143,6 +154,18 @@ class AutoClockOutService {
           '✅ User is inside geofence (${distance.toStringAsFixed(2)}m < ${radiusInMeters}m)',
         );
       }
+
+      // Emit status update to UI
+      _statusController.add({
+        'userLat': position.latitude,
+        'userLng': position.longitude,
+        'targetLat': _targetLat,
+        'targetLng': _targetLng,
+        'distance': distance,
+        'isInside': distance <= radiusInMeters,
+        'radius': radiusInMeters,
+        'violationCount': _violationCount,
+      });
     } catch (e) {
       debugPrint('❌ Error checking location: $e');
     }
@@ -183,5 +206,6 @@ class AutoClockOutService {
 
   void dispose() {
     stopMonitoring();
+    _statusController.close();
   }
 }

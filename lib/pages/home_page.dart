@@ -93,6 +93,18 @@ class _HomePageState extends State<HomePage> {
       onLeaveGeofence: _onUserLeftGeofence,
     );
 
+    // ✨ Listen to auto clock-out status stream
+    _autoClockOutService?.statusStream.listen((status) {
+      if (mounted) {
+        setState(() {
+          _currentUserLat = status['userLat'];
+          _currentUserLng = status['userLng'];
+          _lastDistance = status['distance'];
+          _lastViolationCount = status['violationCount'];
+        });
+      }
+    });
+
     _initializeData();
     _startTimers();
     _startLocationAutoRefresh();
@@ -126,20 +138,6 @@ class _HomePageState extends State<HomePage> {
     }
 
     await _performClockOut(isAutomatic: true, distance: distance);
-  }
-
-  Future<void> _updateGeofenceStatus() async {
-    if (!(_autoClockOutService?.isMonitoring ?? false)) return;
-
-    final status = await _autoClockOutService?.checkNow();
-    if (status != null && status['distance'] != null && mounted) {
-      setState(() {
-        _currentUserLat = status['userLat'];
-        _currentUserLng = status['userLng'];
-        _lastDistance = status['distance'];
-        _lastViolationCount = status['violationCount'];
-      });
-    }
   }
 
   void _showAutoClockOutDialog(double distance) {
@@ -251,9 +249,6 @@ class _HomePageState extends State<HomePage> {
     _updateDateTime();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       _updateDateTime();
-      if (_isClockedIn && (_autoClockOutService?.isMonitoring ?? false)) {
-        _updateGeofenceStatus();
-      }
     });
   }
 
@@ -387,7 +382,7 @@ class _HomePageState extends State<HomePage> {
       // 🧪 DEBUG: Print your real lat/long - COPY THIS TO testMode!
       debugPrint('═══════════════════════════════════════════');
       debugPrint(
-        '🧪 YOUR REAL LOCATION at ${DateTime.now().toIso8601String()}:',
+        '(test from homepage) YOUR REAL LOCATION at ${DateTime.now().toIso8601String()}:',
       );
       debugPrint('   const double testLat = $_latitude;');
       debugPrint('   const double testLng = $_longitude;');
