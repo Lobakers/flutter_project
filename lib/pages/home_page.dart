@@ -7,6 +7,7 @@ import 'package:beewhere/controller/attendance_profile_api.dart';
 import 'package:beewhere/controller/clock_api.dart';
 import 'package:beewhere/controller/geofence_helper.dart';
 import 'package:beewhere/controller/auto_clockout_service.dart';
+import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/services/background_geofence_service.dart';
 import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
@@ -183,7 +184,60 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // ✨ LOAD CACHED DATA FOR INSTANT UI
+  Future<void> _loadCachedData() async {
+    // 1. Load Clock Status
+    try {
+      final cachedClock = await OfflineDatabase.getClockStatus();
+      if (cachedClock != null && mounted) {
+        debugPrint('📱 Loaded clock status from cache');
+        setState(() {
+          _isClockedIn = cachedClock['isClockedIn'] == true;
+          if (_isClockedIn) {
+            _clockRefGuid = cachedClock['clockLogGuid'];
+            _clockInTime = cachedClock['clockTime'];
+            _clockStatus = _formatClockTime(_clockInTime);
+            _selectedJobType = _capitalizeFirst(cachedClock['jobType'] ?? '');
+            _selectedClient = cachedClock['clientId'];
+            _selectedProject = cachedClock['projectId'];
+            _selectedContract = cachedClock['contractId'];
+            _activityName = cachedClock['activityName'] ?? '';
+            _activityController.text = _activityName;
+
+            // Trigger UI updates
+            _updateFieldVisibility(_selectedJobType);
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading cached clock status: $e');
+    }
+
+    // 2. Load Dropdowns
+    try {
+      final cachedClients = await OfflineDatabase.getClients();
+      final cachedProjects = await OfflineDatabase.getProjects();
+      final cachedContracts = await OfflineDatabase.getContracts();
+
+      if (mounted) {
+        setState(() {
+          if (cachedClients.isNotEmpty) _clients = cachedClients;
+          if (cachedProjects.isNotEmpty) _projects = cachedProjects;
+          if (cachedContracts.isNotEmpty) _contracts = cachedContracts;
+        });
+        debugPrint(
+          '📱 Loaded dropdowns from cache: ${_clients.length} clients',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading cached dropdowns: $e');
+    }
+  }
+
   Future<void> _initializeData() async {
+    // ✨ Load cache FIRST for instant feedback
+    await _loadCachedData();
+
     await DeviceInfoHelper.init();
     await _loadAttendanceProfile();
     await _loadDropdownData();
@@ -250,7 +304,9 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _checkExistingClock() async {
     final result = await ClockApi.getLatestClock(context);
-    if (result['success'] && result['isClockedIn'] == true && mounted) {
+    if (!mounted) return;
+
+    if (result['success'] && result['isClockedIn'] == true) {
       setState(() {
         _isClockedIn = true;
         _clockRefGuid = result['clockLogGuid'];
@@ -268,6 +324,25 @@ class _HomePageState extends State<HomePage> {
 
       // ✨ If already clocked in, restart geofence monitoring
       _startGeofenceMonitoringForClient(_selectedClient);
+    } else if (result['success'] && result['isClockedIn'] == false) {
+      // ✨ FIX: If cache said we were clocked in, but server says we are NOT, reset UI
+      if (_isClockedIn) {
+        debugPrint(
+          '⚠️ Cache mismatch: Server says NOT clocked in. Resetting UI.',
+        );
+        setState(() {
+          _isClockedIn = false;
+          _clockRefGuid = null;
+          _clockStatus = "You Haven't Clocked In Yet";
+          _selectedJobType = '';
+          _selectedClient = null;
+          _selectedProject = null;
+          _selectedContract = null;
+          _activityController.clear();
+          _fieldVisibility = {};
+        });
+        _autoClockOutService?.stopMonitoring();
+      }
     }
   }
 
