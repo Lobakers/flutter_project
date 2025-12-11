@@ -21,7 +21,7 @@ class AutoClockOutService {
 
   // Settings
   final Duration checkInterval;
-  final double radiusInMeters;
+  double radiusInMeters; // ✨ Made non-final to allow dynamic updates
 
   // Callback when user exits geofence
   OnLeaveGeofence? onLeaveGeofence;
@@ -49,6 +49,7 @@ class AutoClockOutService {
     required double targetLat,
     required double targetLng,
     String? targetAddress,
+    double? radiusInMeters, // ✨ Optional override
   }) {
     if (_isMonitoring) {
       debugPrint('⚠️ Already monitoring, stopping previous session');
@@ -58,6 +59,10 @@ class AutoClockOutService {
     _targetLat = targetLat;
     _targetLng = targetLng;
     _targetAddress = targetAddress;
+    // ✨ Use override if provided, otherwise fallback to default
+    if (radiusInMeters != null) {
+      this.radiusInMeters = radiusInMeters;
+    }
     _isMonitoring = true;
     _violationCount = 0; // Reset violation counter
 

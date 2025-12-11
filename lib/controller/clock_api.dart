@@ -89,6 +89,19 @@ class ClockApi {
             'ClockIn Failed: Status ${response.statusCode}',
             tag: 'ClockApi',
           );
+          
+          // ✨ Check for multi-device conflict
+          final responseBody = response.body.toLowerCase();
+          if (responseBody.contains('fail to create resource') || 
+              responseBody.contains('resource') ||
+              response.statusCode == 409) {
+            return {
+              "success": false,
+              "multiDeviceConflict": true,
+              "message": "You have already clocked in on another device. Please refresh the page to see the latest status.",
+            };
+          }
+          
           return {
             "success": false,
             "message": "Clock in failed: ${response.body}",
@@ -262,6 +275,19 @@ class ClockApi {
             'ClockOut Failed: Status ${response.statusCode}',
             tag: 'ClockApi',
           );
+          
+          // ✨ Check for multi-device conflict
+          final responseBody = response.body.toLowerCase();
+          if (responseBody.contains('fail to create resource') || 
+              responseBody.contains('resource') ||
+              response.statusCode == 409) {
+            return {
+              "success": false,
+              "multiDeviceConflict": true,
+              "message": "You have already clocked out on another device. Please refresh the page to see the latest status.",
+            };
+          }
+          
           return {
             "success": false,
             "message": "Clock out failed: ${response.body}",

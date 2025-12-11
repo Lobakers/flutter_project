@@ -37,7 +37,11 @@ class AttendanceProvider with ChangeNotifier {
   bool othersActivityList = false;
   bool othersGeofenceFilter = false;
 
-  /// Set data from API response
+  // ✨ Auto clock-out ranges (in meters)
+  double? officeAutoClockOutRange;
+  double? siteAutoClockOutRange;
+  double? homeAutoClockOutRange;
+  double? othersAutoClockOutRange;
   void setFromApiResponse(Map<String, dynamic> data) {
     final property = data['property'];
 
@@ -46,6 +50,9 @@ class AttendanceProvider with ChangeNotifier {
     siteVisible = property['site']['value'] ?? false;
     homeVisible = property['home']['value'] ?? false;
     othersVisible = property['others']['value'] ?? false;
+
+    // ✨ Parsing Auto Clock-out Ranges
+    _parseAutoClockoutRanges(property);
 
     // Office fields
     officeClientList = property['office']['client_list'] ?? false;
@@ -82,7 +89,7 @@ class AttendanceProvider with ChangeNotifier {
   Map<String, bool> getFieldsForJobType(String jobType) {
     switch (jobType.toLowerCase()) {
       case 'office':
-        return {
+        return <String, bool>{
           'client': officeClientList,
           'project': officeProjectList,
           'contract': officeContractList,
@@ -90,7 +97,7 @@ class AttendanceProvider with ChangeNotifier {
           'geofence_filter': officeGeofenceFilter,
         };
       case 'site':
-        return {
+        return <String, bool>{
           'client': siteClientList,
           'project': siteProjectList,
           'contract': siteContractList,
@@ -98,7 +105,7 @@ class AttendanceProvider with ChangeNotifier {
           'geofence_filter': siteGeofenceFilter,
         };
       case 'home':
-        return {
+        return <String, bool>{
           'client': homeClientList,
           'project': homeProjectList,
           'contract': homeContractList,
@@ -106,7 +113,7 @@ class AttendanceProvider with ChangeNotifier {
           'geofence_filter': homeGeofenceFilter,
         };
       case 'others':
-        return {
+        return <String, bool>{
           'client': othersClientList,
           'project': othersProjectList,
           'contract': othersContractList,
@@ -114,7 +121,7 @@ class AttendanceProvider with ChangeNotifier {
           'geofence_filter': othersGeofenceFilter,
         };
       default:
-        return {
+        return <String, bool>{
           'client': false,
           'project': false,
           'contract': false,
@@ -164,6 +171,63 @@ class AttendanceProvider with ChangeNotifier {
     othersActivityList = false;
     othersGeofenceFilter = false;
 
+    // Reset ranges
+    officeAutoClockOutRange = null;
+    siteAutoClockOutRange = null;
+    homeAutoClockOutRange = null;
+    othersAutoClockOutRange = null;
+
     notifyListeners();
+  }
+
+  /// NEW: Parse auto clock-out ranges from property
+  void _parseAutoClockoutRanges(Map<String, dynamic> property) {
+    if (property['office'] != null &&
+        property['office']['autoclockout_filter'] != null &&
+        property['office']['autoclockout_filter']['value'] == true) {
+      officeAutoClockOutRange =
+          (property['office']['autoclockout_filter']['range'] as num?)
+              ?.toDouble();
+    }
+
+    if (property['site'] != null &&
+        property['site']['autoclockout_filter'] != null &&
+        property['site']['autoclockout_filter']['value'] == true) {
+      siteAutoClockOutRange =
+          (property['site']['autoclockout_filter']['range'] as num?)
+              ?.toDouble();
+    }
+
+    if (property['home'] != null &&
+        property['home']['autoclockout_filter'] != null &&
+        property['home']['autoclockout_filter']['value'] == true) {
+      homeAutoClockOutRange =
+          (property['home']['autoclockout_filter']['range'] as num?)
+              ?.toDouble();
+    }
+
+    if (property['others'] != null &&
+        property['others']['autoclockout_filter'] != null &&
+        property['others']['autoclockout_filter']['value'] == true) {
+      othersAutoClockOutRange =
+          (property['others']['autoclockout_filter']['range'] as num?)
+              ?.toDouble();
+    }
+  }
+
+  /// NEW: Get configured radius for job type
+  double? getRadiusForJobType(String jobType) {
+    switch (jobType.toLowerCase()) {
+      case 'office':
+        return officeAutoClockOutRange;
+      case 'site':
+        return siteAutoClockOutRange;
+      case 'home':
+        return homeAutoClockOutRange;
+      case 'others':
+        return othersAutoClockOutRange;
+      default:
+        return null;
+    }
   }
 }

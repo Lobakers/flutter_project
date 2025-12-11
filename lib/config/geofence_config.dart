@@ -35,8 +35,8 @@ class GeofenceConfig {
   // ==================== USER-FACING MESSAGES ====================
 
   /// Message shown when no clients are found within the filter radius
-  static String get noClientsFoundMessage =>
-      'No clients found within $clientFilterRadiusText of your location. '
+  static String getNoClientsFoundMessage(double radius) =>
+      'No clients found within ${radius.toStringAsFixed(0)}m of your location. '
       'Try refreshing your location or move closer to a client site.';
 
   /// Get a formatted message for distance from target location

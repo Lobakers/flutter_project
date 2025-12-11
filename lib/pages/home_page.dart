@@ -490,7 +490,12 @@ class _HomePageState extends State<HomePage> {
       return _clients;
     }
 
-    // Filter clients within 1000m
+    // ✨ Get configured radius for job type
+    final configRadius =
+        attendance.getRadiusForJobType(_selectedJobType) ??
+        GeofenceConfig.clientFilterRadius;
+
+    // Filter clients within configured radius
     final nearbyClients = _clients.where((client) {
       final locationData = client['LOCATION_DATA'] as List<dynamic>?;
       if (locationData == null || locationData.isEmpty) {
@@ -514,8 +519,7 @@ class _HomePageState extends State<HomePage> {
       );
 
       return distance <=
-          GeofenceConfig
-              .clientFilterRadius; // Only include clients within configured radius
+          configRadius; // Only include clients within configured radius
     }).toList();
 
     // debugPrint(
@@ -601,9 +605,15 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
+    // ✨ Get configured radius for current job type
+    final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+    final configRadius =
+        attendance.getRadiusForJobType(_selectedJobType) ??
+        GeofenceConfig.autoClockOutRadius;
+
     debugPrint('🎯 Starting geofence monitoring');
     debugPrint('   Target: $targetLat, $targetLng');
-    debugPrint('   Radius: 500.0m');
+    debugPrint('   Radius: ${configRadius}m');
     debugPrint('   Check interval: 15s');
     debugPrint('   Required violations: 2');
 
@@ -611,6 +621,7 @@ class _HomePageState extends State<HomePage> {
       targetLat: targetLat,
       targetLng: targetLng,
       targetAddress: targetAddress,
+      radiusInMeters: configRadius, // ✨ Use dynamic radius
     );
   }
 
@@ -639,13 +650,21 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
+      // ✨ Get configured radius for current job type
+      final attendance = Provider.of<AttendanceProvider>(
+        context,
+        listen: false,
+      );
+      final configRadius =
+          attendance.getRadiusForJobType(_selectedJobType) ??
+          GeofenceConfig.autoClockOutRadius;
+
       // Start background tracking
       await BackgroundGeofenceService.startTracking(
         targetLat: targetLat,
         targetLng: targetLng,
         targetAddress: targetAddress ?? 'Work Location',
-        radiusInMeters:
-            GeofenceConfig.autoClockOutRadius, // Match foreground radius
+        radiusInMeters: configRadius, // ✨ Use dynamic radius
         clockRefGuid: _clockRefGuid!,
       );
 
@@ -727,7 +746,15 @@ class _HomePageState extends State<HomePage> {
         'Time: ${_formatClockTime(result['clockTime'])}',
       );
     } else {
-      _showDialog('Error', result['message'] ?? 'Clock in failed');
+      // ✨ Check for multi-device conflict
+      if (result['multiDeviceConflict'] == true) {
+        _showMultiDeviceConflictDialog(
+          'Already Clocked In',
+          result['message'] ?? 'You have already clocked in on another device.',
+        );
+      } else {
+        _showDialog('Error', result['message'] ?? 'Clock in failed');
+      }
     }
   }
 
@@ -794,7 +821,16 @@ class _HomePageState extends State<HomePage> {
         _fieldVisibility = {};
       });
     } else {
-      _showDialog('Error', result['message'] ?? 'Clock out failed');
+      // ✨ Check for multi-device conflict
+      if (result['multiDeviceConflict'] == true) {
+        _showMultiDeviceConflictDialog(
+          'Already Clocked Out',
+          result['message'] ??
+              'You have already clocked out on another device.',
+        );
+      } else {
+        _showDialog('Error', result['message'] ?? 'Clock out failed');
+      }
     }
   }
 
@@ -872,6 +908,87 @@ class _HomePageState extends State<HomePage> {
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('OK', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// ✨ Show dialog for multi-device conflicts with refresh option
+  void _showMultiDeviceConflictDialog(String title, String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: Colors.orange,
+        title: Row(
+          children: [
+            const Icon(Icons.devices, color: Colors.white, size: 28),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              message,
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.white, size: 20),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Please refresh the page to sync the latest status.',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close', style: TextStyle(color: Colors.white70)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(context);
+              // Refresh the page data
+              await _initializeData();
+            },
+            icon: const Icon(Icons.refresh, size: 20),
+            label: const Text('Refresh Now'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.orange,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
           ),
         ],
       ),
@@ -1034,7 +1151,7 @@ class _HomePageState extends State<HomePage> {
               _buildLocationDisplay(),
               const SizedBox(height: 20),
               _buildClockButton(),
-              // if (_isClockedIn) _buildGeofenceStatus(),
+              if (_isClockedIn) _buildGeofenceStatus(),
               const SizedBox(height: 30),
             ],
           ),
@@ -1082,9 +1199,9 @@ class _HomePageState extends State<HomePage> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    const Text(
-                      'Auto clock-out if you move >500m away',
-                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    Text(
+                      'Auto clock-out if you move >${_autoClockOutService?.radiusInMeters.toStringAsFixed(0) ?? 'N/A'}m away',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                   ],
                 ),
@@ -1293,8 +1410,11 @@ class _HomePageState extends State<HomePage> {
       final shouldShowRadius = jobTypeConfig['geofence_filter'] ?? false;
 
       if (shouldShowRadius) {
-        displayRadius = GeofenceConfig
-            .mapDisplayRadius; // Show radius when geofence is active
+        // ✨ Get dynamic radius (fallback to default)
+        final configRadius =
+            attendance.getRadiusForJobType(_selectedJobType) ??
+            GeofenceConfig.mapDisplayRadius;
+        displayRadius = configRadius;
       }
     }
 
@@ -1423,6 +1543,15 @@ class _HomePageState extends State<HomePage> {
 
     // Show helpful message when no clients are nearby
     if (label == 'Client' && items.isEmpty) {
+      // ✨ Get configured radius for message
+      final attendance = Provider.of<AttendanceProvider>(
+        context,
+        listen: false,
+      );
+      final radius =
+          attendance.getRadiusForJobType(_selectedJobType) ??
+          GeofenceConfig.clientFilterRadius;
+
       return Container(
         margin: const EdgeInsets.only(bottom: 15),
         padding: const EdgeInsets.all(16),
@@ -1448,7 +1577,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    GeofenceConfig.noClientsFoundMessage,
+                    GeofenceConfig.getNoClientsFoundMessage(radius),
                     style: TextStyle(
                       fontSize: 12,
                       color: Colors.orange.shade800,
