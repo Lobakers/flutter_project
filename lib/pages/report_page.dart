@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'package:beewhere/controller/report_api.dart';
 import 'package:beewhere/widgets/drawer.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class ReportPage extends StatefulWidget {
   const ReportPage({super.key});
@@ -31,11 +34,35 @@ class _ReportPageState extends State<ReportPage> {
   List<dynamic> _reportData = [];
   String? _errorMessage;
 
+  // Connectivity state
+  bool _isOnline = true;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+
   @override
   void initState() {
     super.initState();
     // Initialize with current month
     _calculateDateRange();
+    _initConnectivityListener();
+  }
+
+  void _initConnectivityListener() {
+    _isOnline = ConnectivityService.isOnline;
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      ConnectivityResult result,
+    ) {
+      if (mounted) {
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
   }
 
   /// Calculate date range based on duration selection
@@ -247,6 +274,44 @@ class _ReportPageState extends State<ReportPage> {
             backgroundColor: Colors.transparent,
             foregroundColor: Colors.white,
             elevation: 0,
+            actions: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _isOnline
+                      ? Colors.green.withOpacity(0.2)
+                      : Colors.red.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _isOnline ? Colors.green : Colors.red,
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _isOnline ? Icons.wifi : Icons.wifi_off,
+                      color: _isOnline ? Colors.green : Colors.red,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _isOnline ? 'Online' : 'Offline',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _isOnline ? Colors.green : Colors.red,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 16),
+            ],
           ),
         ),
       ),

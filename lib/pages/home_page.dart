@@ -23,6 +23,8 @@ import 'package:provider/provider.dart';
 import 'package:slide_to_act/slide_to_act.dart';
 import 'package:beewhere/widgets/location_map_widget.dart';
 import 'package:beewhere/config/geofence_config.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -73,6 +75,10 @@ class _HomePageState extends State<HomePage> {
 
   AutoClockOutService? _autoClockOutService;
 
+  // Connectivity state
+  bool _isOnline = true;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+
   double? _currentUserLat;
   double? _currentUserLng;
   double? _lastDistance;
@@ -108,6 +114,24 @@ class _HomePageState extends State<HomePage> {
     _initializeData();
     _startTimers();
     _startLocationAutoRefresh();
+    _initConnectivityListener();
+  }
+
+  // ✨ Initialize connectivity listener
+  void _initConnectivityListener() {
+    // Set initial state
+    _isOnline = ConnectivityService.isOnline;
+
+    // Listen to connectivity changes
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      ConnectivityResult result,
+    ) {
+      if (mounted) {
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    });
   }
 
   @override
@@ -115,6 +139,7 @@ class _HomePageState extends State<HomePage> {
     _timer?.cancel();
     _activityController.dispose();
     _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
+    _connectivitySubscription?.cancel();
     super.dispose();
   }
 
@@ -1066,21 +1091,43 @@ class _HomePageState extends State<HomePage> {
                 elevation: 0,
                 title: const Text('beeWhere'),
                 actions: [
-                  if (isMonitoring)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 16),
-                      child: Row(
-                        children: const [
-                          Icon(
-                            Icons.location_on,
-                            color: Colors.green,
-                            size: 20,
-                          ),
-                          SizedBox(width: 4),
-                          Text('Tracking', style: TextStyle(fontSize: 12)),
-                        ],
+                  // Online/Offline status label
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _isOnline
+                          ? Colors.green.withOpacity(0.2)
+                          : Colors.red.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _isOnline ? Colors.green : Colors.red,
+                        width: 1.5,
                       ),
                     ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _isOnline ? Icons.wifi : Icons.wifi_off,
+                          color: _isOnline ? Colors.green : Colors.red,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _isOnline ? 'Online' : 'Offline',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _isOnline ? Colors.green : Colors.red,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
                 ],
               ),
               // User info section (previously the banner)
@@ -1151,7 +1198,7 @@ class _HomePageState extends State<HomePage> {
               _buildLocationDisplay(),
               const SizedBox(height: 20),
               _buildClockButton(),
-              if (_isClockedIn) _buildGeofenceStatus(),
+              // if (_isClockedIn) _buildGeofenceStatus(),
               const SizedBox(height: 30),
             ],
           ),

@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:beewhere/pages/login_page.dart';
 import 'package:beewhere/pages/log_viewer_page.dart';
 import 'package:beewhere/pages/web_view_page.dart';
 import 'package:beewhere/services/notification_service.dart';
+import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
@@ -22,10 +24,34 @@ class _ProfilePageState extends State<ProfilePage> {
   String _appVersion = 'Loading...';
   String _buildNumber = '';
 
+  // Connectivity state
+  bool _isOnline = true;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+
   @override
   void initState() {
     super.initState();
     _loadAppInfo();
+    _initConnectivityListener();
+  }
+
+  void _initConnectivityListener() {
+    _isOnline = ConnectivityService.isOnline;
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      ConnectivityResult result,
+    ) {
+      if (mounted) {
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadAppInfo() async {
@@ -130,6 +156,44 @@ class _ProfilePageState extends State<ProfilePage> {
                 foregroundColor: Colors.white,
                 elevation: 0,
                 title: const Text('Profile'),
+                actions: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _isOnline
+                          ? Colors.green.withOpacity(0.2)
+                          : Colors.red.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _isOnline ? Colors.green : Colors.red,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _isOnline ? Icons.wifi : Icons.wifi_off,
+                          color: _isOnline ? Colors.green : Colors.red,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _isOnline ? 'Online' : 'Offline',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _isOnline ? Colors.green : Colors.red,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                ],
               ),
               Container(
                 width: double.infinity,

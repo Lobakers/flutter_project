@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:beewhere/controller/history_api.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
@@ -6,6 +7,8 @@ import 'package:beewhere/widgets/edit_activity_dialog.dart';
 import 'package:beewhere/widgets/edit_time_request_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -35,6 +38,10 @@ class _HistoryPageState extends State<HistoryPage> {
   DateTime? _startDate;
   DateTime? _endDate;
 
+  // Connectivity state
+  bool _isOnline = true;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+
   @override
   void initState() {
     super.initState();
@@ -44,11 +51,26 @@ class _HistoryPageState extends State<HistoryPage> {
 
     _scrollController.addListener(_onScroll);
     _loadHistory();
+    _initConnectivityListener();
+  }
+
+  void _initConnectivityListener() {
+    _isOnline = ConnectivityService.isOnline;
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      ConnectivityResult result,
+    ) {
+      if (mounted) {
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
     _scrollController.dispose();
+    _connectivitySubscription?.cancel();
     super.dispose();
   }
 
@@ -241,11 +263,42 @@ class _HistoryPageState extends State<HistoryPage> {
             elevation: 0,
             title: const Text('Attendance History'),
             actions: [
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                onPressed: _loadHistory,
-                tooltip: 'Refresh',
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _isOnline
+                      ? Colors.green.withOpacity(0.2)
+                      : Colors.red.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _isOnline ? Colors.green : Colors.red,
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _isOnline ? Icons.wifi : Icons.wifi_off,
+                      color: _isOnline ? Colors.green : Colors.red,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _isOnline ? 'Online' : 'Offline',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _isOnline ? Colors.green : Colors.red,
+                      ),
+                    ),
+                  ],
+                ),
               ),
+              const SizedBox(width: 16),
             ],
           ),
         ),
