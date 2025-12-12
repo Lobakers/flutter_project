@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:beewhere/controller/geofence_helper.dart';
+import 'package:beewhere/config/geofence_config.dart';
 import 'package:beewhere/services/logger_service.dart';
 import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/services/storage_service.dart';
@@ -13,7 +14,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:http/http.dart' as http;
 
 /// Background geofence service using foreground task
-/// Maintains 15-second check interval even when app is closed
+/// Check interval configured in GeofenceConfig.backgroundCheckInterval
 class BackgroundGeofenceService {
   static bool _isRunning = false;
 
@@ -57,7 +58,9 @@ class BackgroundGeofenceService {
         playSound: false,
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(15000), // 15 seconds!
+        eventAction: ForegroundTaskEventAction.repeat(
+          GeofenceConfig.backgroundCheckInterval.inMilliseconds,
+        ),
         autoRunOnBoot: false,
         autoRunOnMyPackageReplaced: false,
         allowWakeLock: true,
@@ -112,7 +115,7 @@ void startCallback() {
 /// Task handler that runs in the background
 class GeofenceTaskHandler extends TaskHandler {
   int _violationCount = 0;
-  final int _requiredViolations = 2; // Same as your current implementation
+  final int _requiredViolations = GeofenceConfig.requiredViolations;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -121,7 +124,7 @@ class GeofenceTaskHandler extends TaskHandler {
 
   @override
   void onRepeatEvent(DateTime timestamp) {
-    // This runs every 15 seconds!
+    // This runs at the interval configured in GeofenceConfig.backgroundCheckInterval
     _checkGeofence();
   }
 

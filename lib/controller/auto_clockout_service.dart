@@ -29,12 +29,12 @@ class AutoClockOutService {
   // Stream for UI updates
   Stream<Map<String, dynamic>> get statusStream => _statusController.stream;
 
-  // ✨ NEW: GPS drift protection
+  // ✨ GPS drift protection
   int _violationCount = 0;
-  final int _requiredViolations = 2; // Must be outside 3 times in a row
+  int _requiredViolations = GeofenceConfig.requiredViolations;
 
   AutoClockOutService({
-    this.checkInterval = const Duration(minutes: 3),
+    this.checkInterval = GeofenceConfig.autoClockOutCheckInterval,
     this.radiusInMeters = GeofenceConfig.autoClockOutRadius,
     this.onLeaveGeofence,
   });

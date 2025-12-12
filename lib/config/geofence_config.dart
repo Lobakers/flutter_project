@@ -1,6 +1,6 @@
-/// Centralized configuration for all geofence-related distance values
+/// Centralized configuration for all geofence-related distance and timing values
 ///
-/// This class contains all distance constants used throughout the application.
+/// This class contains all distance and timing constants used throughout the application.
 /// By centralizing these values, you can change one constant and it will
 /// automatically update all related functionality and user-facing messages.
 class GeofenceConfig {
@@ -18,6 +18,24 @@ class GeofenceConfig {
   /// This is the radius of the circle shown on the map when geofence is active
   static const double mapDisplayRadius = 1000.0;
 
+  // ==================== TIMING CONSTANTS ====================
+
+  /// Auto Clock-Out Check Interval (foreground monitoring)
+  /// How often to check if user is still within the geofence area
+  /// Default: 15 seconds
+  static const Duration autoClockOutCheckInterval = Duration(minutes: 3);
+
+  /// Background Geofence Check Interval
+  /// How often to check location when app is in background
+  /// Default: 30 seconds (longer to save battery)
+  static const Duration backgroundCheckInterval = Duration(minutes: 3);
+
+  /// Required Violation Count
+  /// Number of consecutive violations before triggering auto clock-out
+  /// This prevents false triggers from GPS drift
+  /// Default: 2 violations
+  static const int requiredViolations = 2;
+
   // ==================== HELPER METHODS ====================
 
   /// Get auto clock-out radius as formatted text (e.g., "250m")
@@ -31,6 +49,14 @@ class GeofenceConfig {
   /// Get map display radius as formatted text (e.g., "1000m")
   static String get mapDisplayRadiusText =>
       '${mapDisplayRadius.toStringAsFixed(0)}m';
+
+  /// Get auto clock-out check interval as formatted text (e.g., "15s")
+  static String get autoClockOutCheckIntervalText =>
+      '${autoClockOutCheckInterval.inSeconds}s';
+
+  /// Get background check interval as formatted text (e.g., "30s")
+  static String get backgroundCheckIntervalText =>
+      '${backgroundCheckInterval.inSeconds}s';
 
   // ==================== USER-FACING MESSAGES ====================
 

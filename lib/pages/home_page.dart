@@ -93,7 +93,7 @@ class _HomePageState extends State<HomePage> {
 
     // ✨ FIX: Initialize here safely
     _autoClockOutService = AutoClockOutService(
-      checkInterval: const Duration(seconds: 15),
+      checkInterval: GeofenceConfig.autoClockOutCheckInterval,
       radiusInMeters: GeofenceConfig.autoClockOutRadius,
       // radiusInMeters: 10.0, //testing purpose
       onLeaveGeofence: _onUserLeftGeofence,
@@ -1198,7 +1198,7 @@ class _HomePageState extends State<HomePage> {
               _buildLocationDisplay(),
               const SizedBox(height: 20),
               _buildClockButton(),
-              // if (_isClockedIn) _buildGeofenceStatus(),
+              if (_isClockedIn) _buildGeofenceStatus(),
               const SizedBox(height: 30),
             ],
           ),
