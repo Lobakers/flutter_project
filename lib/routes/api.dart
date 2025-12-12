@@ -21,7 +21,7 @@ class Api {
   static const String clock_activity = devamscore + "/clock/activity"; // PATCH
   static const String support = baseUrl + "/support"; // POST (no /api prefix!)
   static const String azure_upload =
-      devamscore + "/azure/upload"; // POST file upload
+      baseUrl + "/azure/upload"; // POST file upload (no /api prefix)
   static const String report_history =
       devamscore + "/clock/history"; // GET /clock/history/{type}/{start}/{end}
 }

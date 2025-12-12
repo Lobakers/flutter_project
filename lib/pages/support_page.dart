@@ -332,10 +332,7 @@ class _SupportPageState extends State<SupportPage> {
         ),
         actions: [
           Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 6,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
               color: _isOnline
                   ? Colors.green.withOpacity(0.2)
