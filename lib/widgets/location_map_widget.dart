@@ -162,7 +162,7 @@ class LocationMapWidget extends StatelessWidget {
                       builder: (context, markers) {
                         return Container(
                           decoration: BoxDecoration(
-                            color: Colors.purple,
+                            color: const Color.fromARGB(255, 74, 74, 228),
                             shape: BoxShape.circle,
                             border: Border.all(color: Colors.white, width: 3),
                             boxShadow: [

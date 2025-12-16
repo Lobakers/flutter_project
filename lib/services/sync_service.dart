@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/services/pending_sync_service.dart';
 import 'package:beewhere/services/storage_service.dart';
 import 'package:beewhere/services/logger_service.dart';
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart'; // For basename function
 
 /// Service to sync pending offline actions
 /// Works without BuildContext by using direct HTTP calls
@@ -108,6 +110,9 @@ class SyncService {
               break;
             case 'submit_time_request':
               success = await _syncSubmitTimeRequest(token, payload);
+              break;
+            case 'support_request':
+              success = await _syncSupportRequest(token, payload);
               break;
             default:
               LoggerService.error(
@@ -362,6 +367,147 @@ class SyncService {
         error: e,
       );
       return false;
+    }
+  }
+
+  /// Sync support request action using direct HTTP call
+  /// Handles file upload if cached file path is present
+  static Future<bool> _syncSupportRequest(
+    String token,
+    Map<String, dynamic> payload,
+  ) async {
+    try {
+      LoggerService.debug(
+        'Syncing support request: ${jsonEncode(payload)}',
+        tag: 'SyncService',
+      );
+
+      // Check if there's a cached file that needs to be uploaded first
+      final cachedFilePath = payload['_cachedFilePath'] as String?;
+      String? actualFilename = payload['supportingDoc'];
+
+      if (cachedFilePath != null && cachedFilePath.isNotEmpty) {
+        LoggerService.info(
+          'Support request has cached file, uploading first: $cachedFilePath',
+          tag: 'SyncService',
+        );
+
+        // Upload the file first
+        final fileUploadResult = await _uploadFileToAzure(
+          token,
+          cachedFilePath,
+        );
+
+        if (fileUploadResult['success']) {
+          actualFilename = fileUploadResult['filename'];
+          LoggerService.info(
+            'File uploaded successfully: $actualFilename',
+            tag: 'SyncService',
+          );
+        } else {
+          LoggerService.error(
+            'File upload failed during support request sync',
+            tag: 'SyncService',
+          );
+          return false;
+        }
+      }
+
+      // Prepare payload without internal fields
+      final cleanPayload = Map<String, dynamic>.from(payload);
+      cleanPayload.remove('_cachedFilePath');
+      cleanPayload['supportingDoc'] = actualFilename ?? '';
+
+      // Submit support request
+      final response = await http.post(
+        Uri.parse('$_baseUrl/support'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'JWT $token',
+        },
+        body: jsonEncode(cleanPayload),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        LoggerService.info(
+          '✅ Support request synced successfully',
+          tag: 'SyncService',
+        );
+        return true;
+      } else {
+        LoggerService.error(
+          'Support request sync failed: ${response.statusCode} - ${response.body}',
+          tag: 'SyncService',
+        );
+        return false;
+      }
+    } catch (e) {
+      LoggerService.error(
+        'Error syncing support request',
+        tag: 'SyncService',
+        error: e,
+      );
+      return false;
+    }
+  }
+
+  /// Helper: Upload file to Azure storage
+  static Future<Map<String, dynamic>> _uploadFileToAzure(
+    String token,
+    String filePath,
+  ) async {
+    try {
+      final file = File(filePath);
+      if (!await file.exists()) {
+        return {'success': false, 'message': 'File not found'};
+      }
+
+      final stream = http.ByteStream(file.openRead());
+      final length = await file.length();
+      final uri = Uri.parse('$_baseUrl/api/azure/upload');
+
+      final request = http.MultipartRequest("POST", uri);
+      request.headers['Authorization'] = 'JWT $token';
+
+      final multipartFile = http.MultipartFile(
+        'file',
+        stream,
+        length,
+        filename: basename(filePath),
+      );
+
+      request.files.add(multipartFile);
+
+      final response = await request.send();
+      final responseString = await response.stream.bytesToString();
+
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        final jsonResponse = jsonDecode(responseString);
+        return {"success": true, "filename": jsonResponse['filename']};
+      } else {
+        // Generate fallback filename if upload fails (matching support_api behavior)
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        final originalFilename = basename(filePath);
+        final generatedFilename = '${timestamp}_$originalFilename';
+
+        LoggerService.info(
+          'File upload returned ${response.statusCode}, using generated filename: $generatedFilename',
+          tag: 'SyncService',
+        );
+
+        return {
+          "success": true,
+          "filename": generatedFilename,
+          "note": "File upload endpoint not available. Filename generated.",
+        };
+      }
+    } catch (e) {
+      LoggerService.error(
+        'Error uploading file during sync',
+        tag: 'SyncService',
+        error: e,
+      );
+      return {'success': false, 'message': 'Upload error: $e'};
     }
   }
 

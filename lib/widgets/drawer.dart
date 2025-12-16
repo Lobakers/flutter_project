@@ -65,20 +65,20 @@ class AppDrawer extends StatelessWidget {
               Navigator.pushReplacementNamed(context, '/report');
             },
           ),
-          // ListTile(
-          //   leading: const Icon(Icons.help_outline),
-          //   title: const Text('Support'),
-          //   onTap: () {
-          //     Navigator.pop(context); // Close drawer
-          //     Navigator.pushReplacementNamed(context, '/support');
-          //   },
-          // ),
           ListTile(
             leading: const Icon(Icons.person),
             title: const Text('Profile'),
             onTap: () {
               Navigator.pop(context); // Close drawer
               Navigator.pushReplacementNamed(context, '/profile');
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.help_outline),
+            title: const Text('Support'),
+            onTap: () {
+              Navigator.pop(context); // Close drawer
+              Navigator.pushReplacementNamed(context, '/support');
             },
           ),
           ListTile(

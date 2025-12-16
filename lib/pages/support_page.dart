@@ -199,7 +199,7 @@ class _SupportPageState extends State<SupportPage> {
 
   Future<void> _submitSuggestion() async {
     if (_suggestionTitleController.text.isEmpty) {
-      _showSnack('Title is required');
+      _showErrorDialog('Title is required');
       return;
     }
 
@@ -221,60 +221,64 @@ class _SupportPageState extends State<SupportPage> {
     setState(() => _isUploading = false);
 
     if (result['success']) {
-      _showSuccess('Suggestion submitted successfully');
+      _showSuccessDialog('Suggestion submitted successfully');
       _suggestionTitleController.clear();
       _suggestionDescController.clear();
     } else {
-      _showSnack(result['message'] ?? 'Submission failed');
+      _showErrorDialog(result['message'] ?? 'Submission failed');
     }
   }
 
   Future<void> _submitRequest() async {
     // Validation
     if (_requestTitleController.text.isEmpty) {
-      _showSnack('Subject is required');
+      _showErrorDialog('Subject is required');
       return;
     }
     if (_inTime == null) {
-      _showSnack('Start time is required');
+      _showErrorDialog('Start time is required');
       return;
     }
     if (_outTime == null) {
-      _showSnack('End time is required');
+      _showErrorDialog('End time is required');
       return;
     }
     if (_inTime!.isAfter(_outTime!)) {
-      _showSnack('Start time must be less than End time');
+      _showErrorDialog('Start time must be less than End time');
       return;
     }
     if (_selectedFile == null) {
-      _showSnack('Supporting document is required');
+      _showErrorDialog('Supporting document is required');
       return;
     }
 
     setState(() => _isUploading = true);
 
-    // 1. Upload File
-    final uploadResult = await SupportApi.uploadFile(context, _selectedFile!);
-    if (!uploadResult['success']) {
-      setState(() => _isUploading = false);
-      _showSnack(uploadResult['message'] ?? 'File upload failed');
-      return;
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    String filename = '';
+
+    // 1. Try to Upload File (if online)
+    if (_isOnline) {
+      final uploadResult = await SupportApi.uploadFile(context, _selectedFile!);
+      if (!uploadResult['success']) {
+        setState(() => _isUploading = false);
+        _showErrorDialog(uploadResult['message'] ?? 'File upload failed');
+        return;
+      }
+      filename = uploadResult['filename'];
+    } else {
+      // OFFLINE: Generate placeholder filename, actual upload happens during sync
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final originalFilename = p.basename(_selectedFile!.path);
+      filename = '${timestamp}_$originalFilename';
     }
 
-    final filename = uploadResult['filename'];
-
     // 2. Submit Request
-    final auth = Provider.of<AuthProvider>(context, listen: false);
-
-    // Unix Timestamp (Seconds)
     final startTimeSeconds = _inTime!.millisecondsSinceEpoch ~/ 1000;
     final endTimeSeconds = _outTime!.millisecondsSinceEpoch ~/ 1000;
 
     final body = {
-      "requestType":
-          _requestType, // "overtime" or "clocks" (dropdown values might differ?)
-      // User said: type: Dropdown (overtime or clocks)
+      "requestType": _requestType,
       "subject": _requestTitleController.text,
       "starttime": startTimeSeconds,
       "endtime": endTimeSeconds,
@@ -284,11 +288,18 @@ class _SupportPageState extends State<SupportPage> {
       "userEmail": auth.userInfo?['email'] ?? "",
     };
 
-    final result = await SupportApi.submitSupportRequest(context, body);
+    final result = await SupportApi.submitSupportRequest(
+      context,
+      body,
+      cachedFile: _isOnline
+          ? null
+          : _selectedFile, // Pass cached file if offline
+    );
+
     setState(() => _isUploading = false);
 
     if (result['success']) {
-      _showSuccess('Request submitted successfully');
+      _showSuccessDialog(result['message'] ?? 'Request submitted successfully');
       _requestTitleController.clear();
       _requestDescController.clear();
       setState(() {
@@ -297,19 +308,221 @@ class _SupportPageState extends State<SupportPage> {
         _outTime = null;
       });
     } else {
-      _showSnack(result['message'] ?? 'Submission failed');
+      _showErrorDialog(result['message'] ?? 'Submission failed');
     }
   }
 
-  void _showSnack(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
+  void _showErrorDialog(String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF667eea), // Purple-blue
+                Color(0xFF764ba2), // Deep purple
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF667eea).withOpacity(0.3),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'Action Required',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF667eea),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
-  void _showSuccess(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.green),
+  void _showSuccessDialog(String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF2DD36F), // Green
+                Color(0xFF10B981), // Emerald green
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF2DD36F).withOpacity(0.3),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check_circle_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'Success',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF2DD36F),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -434,26 +647,25 @@ class _SupportPageState extends State<SupportPage> {
               style: const TextStyle(fontSize: 14, color: Colors.grey),
             ),
             const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: _isClockedIn
-                    ? const Color(0xFFE8F5E9)
-                    : const Color(0xFFFFEBEE),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: _isClockedIn ? Colors.green : Colors.red,
-                  width: 1,
+            if (_isClockedIn)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE8F5E9),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.green, width: 1),
+                ),
+                child: const Text(
+                  'Clocked In',
+                  style: TextStyle(
+                    color: Colors.green,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
-              child: Text(
-                _isClockedIn ? 'Clocked In' : 'Clocked Out',
-                style: TextStyle(
-                  color: _isClockedIn ? Colors.green : Colors.red,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
             if (_isClockedIn) ...[
               const SizedBox(height: 8),
               Text(

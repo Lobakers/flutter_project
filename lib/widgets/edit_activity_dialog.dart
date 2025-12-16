@@ -102,11 +102,116 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
     });
   }
 
+  void _showErrorDialog(String title, String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF667eea), // Purple-blue
+                Color(0xFF764ba2), // Deep purple
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF667eea).withOpacity(0.3),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF667eea),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _saveActivities() async {
     if (_clockLogGuid == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Missing clock ID')));
+      _showErrorDialog('Error', 'Missing clock ID');
       return;
     }
 
@@ -121,6 +226,15 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
         )
         .toList();
 
+    // Validate that at least one activity is entered
+    if (activities.isEmpty) {
+      _showErrorDialog(
+        'Action Required',
+        'Please enter at least one activity before saving',
+      );
+      return;
+    }
+
     final result = await HistoryApi.updateActivity(
       context,
       _clockLogGuid!,
@@ -132,24 +246,107 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
         // Show styled success dialog first
         await showDialog(
           context: context,
-          builder: (_) => AlertDialog(
-            backgroundColor: const Color(0xFF2DD36F),
-            title: const Text(
-              'Activity Updated',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white),
+          builder: (_) => Dialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
             ),
-            content: const Text(
-              'Your activity has been updated successfully',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('OK', style: TextStyle(color: Colors.white)),
+            elevation: 8,
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF2DD36F), // Green
+                    Color(0xFF10B981), // Emerald green
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF2DD36F).withOpacity(0.3),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
               ),
-            ],
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Icon section
+                  Container(
+                    margin: const EdgeInsets.only(top: 24),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.check_circle_rounded,
+                      color: Colors.white,
+                      size: 40,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Title
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      'Activity Updated',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Message
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      'Your activity has been updated successfully',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.9),
+                        fontSize: 14,
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  // Button
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF2DD36F),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: const Text(
+                          'OK',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         );
         // Then close the edit dialog and return to history page

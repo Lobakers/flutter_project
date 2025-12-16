@@ -705,7 +705,7 @@ class _HomePageState extends State<HomePage> {
     // Validation 1: Job type required
     if (_selectedJobType.isEmpty) {
       _showDialog(
-        'Error',
+        'Action Required',
         'Please select a job type (Office/Site/Home/Others)',
       );
       return;
@@ -715,13 +715,13 @@ class _HomePageState extends State<HomePage> {
     if (!_isClockedIn &&
         _fieldVisibility['client'] == true &&
         _selectedClient == null) {
-      _showDialog('Error', 'Please select a client');
+      _showDialog('Action Required', 'Please select a client');
       return;
     }
 
     // Validation 3: Location required
     if (_latitude == null || _longitude == null) {
-      _showDialog('Error', 'Please get your current location first');
+      _showDialog('Action Required', 'Please get your current location first');
       return;
     }
 
@@ -904,15 +904,105 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF667eea), // Purple-blue
+                Color(0xFF764ba2), // Deep purple
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF667eea).withOpacity(0.3),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
           ),
-        ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF667eea),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -921,20 +1011,105 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF2DD36F),
-        title: Text(
-          title,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white),
-        ),
-        content: Text(message, style: const TextStyle(color: Colors.white)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF2DD36F), // Green
+                Color(0xFF10B981), // Emerald green
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF2DD36F).withOpacity(0.3),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
           ),
-        ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check_circle_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF2DD36F),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1198,7 +1373,7 @@ class _HomePageState extends State<HomePage> {
               _buildLocationDisplay(),
               const SizedBox(height: 20),
               _buildClockButton(),
-              if (_isClockedIn) _buildGeofenceStatus(),
+              // if (_isClockedIn) _buildGeofenceStatus(),
               const SizedBox(height: 30),
             ],
           ),

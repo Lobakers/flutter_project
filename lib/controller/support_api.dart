@@ -4,6 +4,8 @@ import 'package:beewhere/routes/api.dart';
 import 'package:beewhere/services/logger_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/controller/api_service.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:beewhere/services/pending_sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart';
@@ -115,7 +117,8 @@ class SupportApi {
         return {
           "success": true,
           "filename": generatedFilename,
-          "note": "File upload endpoint not available. Filename generated locally.",
+          "note":
+              "File upload endpoint not available. Filename generated locally.",
         };
       } else {
         return {
@@ -132,29 +135,85 @@ class SupportApi {
   /// Submit Support Request (Suggestion or Clock/Overtime Request)
   static Future<Map<String, dynamic>> submitSupportRequest(
     BuildContext context,
-    Map<String, dynamic> body,
-  ) async {
+    Map<String, dynamic> body, {
+    File? cachedFile, // Optional: reference to locally cached file for offline
+  }) async {
     try {
-      LoggerService.info('Submitting Support Request', tag: 'SupportApi');
-      LoggerService.debug('Payload: ${jsonEncode(body)}', tag: 'SupportApi');
+      // Check connectivity first
+      final isOnline = await ConnectivityService.checkConnectivity();
 
-      final response = await ApiService.post(context, Api.support, body);
+      if (isOnline) {
+        // ONLINE: Submit directly
+        LoggerService.info('Submitting Support Request', tag: 'SupportApi');
+        LoggerService.debug('Payload: ${jsonEncode(body)}', tag: 'SupportApi');
 
-      LoggerService.info(
-        'Submit Response: ${response.statusCode}',
-        tag: 'SupportApi',
-      );
+        final response = await ApiService.post(context, Api.support, body);
 
-      if (response.statusCode == 201 || response.statusCode == 200) {
-        return {"success": true, "message": "Submitted successfully"};
+        LoggerService.info(
+          'Submit Response: ${response.statusCode}',
+          tag: 'SupportApi',
+        );
+
+        if (response.statusCode == 201 || response.statusCode == 200) {
+          return {"success": true, "message": "Submitted successfully"};
+        } else {
+          return {
+            "success": false,
+            "message": "Submission failed: ${response.body}",
+          };
+        }
       } else {
+        // OFFLINE: Queue for later sync
+        final payload = Map<String, dynamic>.from(body);
+
+        // If there's a cached file, store its path in the payload
+        if (cachedFile != null) {
+          payload['_cachedFilePath'] = cachedFile.path;
+        }
+
+        await PendingSyncService.addPendingAction(
+          actionType: 'support_request',
+          payload: payload,
+        );
+
+        LoggerService.info(
+          'Support request queued for offline sync',
+          tag: 'SupportApi',
+        );
+
         return {
-          "success": false,
-          "message": "Submission failed: ${response.body}",
+          "success": true,
+          "message": "Saved offline. Will sync when online.",
         };
       }
     } catch (e) {
       LoggerService.error('Submit Exception', tag: 'SupportApi', error: e);
+
+      // On error, try to queue offline
+      try {
+        final payload = Map<String, dynamic>.from(body);
+
+        if (cachedFile != null) {
+          payload['_cachedFilePath'] = cachedFile.path;
+        }
+
+        await PendingSyncService.addPendingAction(
+          actionType: 'support_request',
+          payload: payload,
+        );
+
+        return {
+          "success": true,
+          "message": "Saved offline due to error. Will sync when online.",
+        };
+      } catch (queueError) {
+        LoggerService.error(
+          'Failed to queue support request',
+          tag: 'SupportApi',
+          error: queueError,
+        );
+      }
+
       return {"success": false, "message": "Network error: $e"};
     }
   }
