@@ -12,11 +12,11 @@ class GeofenceConfig {
 
   /// Client Filtering Radius (for nearby clients dropdown)
   /// This determines which clients appear in the dropdown based on proximity
-  static const double clientFilterRadius = 1000.0;
+  static const double clientFilterRadius = 250.0;
 
   /// Map Display Radius (visual circle on map)
   /// This is the radius of the circle shown on the map when geofence is active
-  static const double mapDisplayRadius = 1000.0;
+  static const double mapDisplayRadius = 250.0;
 
   // ==================== TIMING CONSTANTS ====================
 

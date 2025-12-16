@@ -46,7 +46,7 @@ class LocationMapWidget extends StatelessWidget {
             child: FlutterMap(
               options: MapOptions(
                 initialCenter: LatLng(latitude, longitude),
-                initialZoom: 14.0,
+                initialZoom: 16.0,
                 interactionOptions: const InteractionOptions(
                   flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
                 ),
