@@ -13,7 +13,11 @@ class SyncService {
   static bool _isSyncing = false;
   static int _syncedCount = 0;
   static int _failedCount = 0;
-  static const String _baseUrl = 'https://devamscore.beesuite.app';
+  // Production API (currently active)
+  static const String _baseUrl = 'https://amscore.beesuite.app';
+  
+  // Development API (commented out for testing later)
+  // static const String _baseUrl = 'https://devamscore.beesuite.app';
 
   /// Check if currently syncing
   static bool get isSyncing => _isSyncing;

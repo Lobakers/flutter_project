@@ -1,8 +1,14 @@
 class Api {
-  static const String system = 'https://devauth.beesuite.app/api';
-  static const String devamscore = 'https://devamscore.beesuite.app/api';
+  // Production API (currently active)
+  static const String system = 'https://auth.beesuite.app/api';
+  static const String devamscore = 'https://amscore.beesuite.app/api';
   static const String baseUrl =
-      'https://devamscore.beesuite.app'; // Base without /api
+      'https://amscore.beesuite.app'; // Base without /api
+
+  // Development API (commented out for testing later)
+  // static const String system = 'https://devauth.beesuite.app/api';
+  // static const String devamscore = 'https://devamscore.beesuite.app/api';
+  // static const String baseUrl = 'https://devamscore.beesuite.app';
 
   static const String login = system + '/auth/login';
   static const String user_info = devamscore + '/user-info';
