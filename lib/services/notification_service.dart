@@ -101,6 +101,7 @@ class NotificationService {
   static Future<void> showAutoClockOutNotification({
     required double distance,
     required String location,
+    String? reason,
   }) async {
     print(
       '🔔 [NotificationService] Attempting to show auto clock-out notification',
@@ -110,6 +111,14 @@ class NotificationService {
     }
 
     try {
+      // Determine notification message based on reason
+      String message;
+      if (reason == 'location_disabled') {
+        message = 'Location service was disabled. You have been automatically clocked out.';
+      } else {
+        message = 'You moved ${distance.toStringAsFixed(0)}m from $location. You are being automatically clocked out.';
+      }
+
       final AndroidNotificationDetails
       androidDetails = AndroidNotificationDetails(
         'auto_clockout_channel',
@@ -121,9 +130,7 @@ class NotificationService {
         enableVibration: true,
         icon: '@mipmap/ic_launcher',
         color: const Color(0xFF4B39EF),
-        styleInformation: BigTextStyleInformation(
-          'You moved ${distance.toStringAsFixed(0)}m from $location. You are being automatically clocked out.',
-        ),
+        styleInformation: BigTextStyleInformation(message),
       );
 
       const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(

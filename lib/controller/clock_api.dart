@@ -214,9 +214,6 @@ class ClockApi {
     required String deviceId,
   }) async {
     try {
-      // Check if online
-      final isOnline = await ConnectivityService.checkConnectivity();
-
       final clockTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final body = {
         "userGuid": userGuid,
@@ -237,8 +234,9 @@ class ClockApi {
         "clockRefGuid": clockRefGuid,
       };
 
-      if (isOnline) {
-        // ONLINE: Send to API
+      // ✨ FIX: Always try API first, queue for offline only if it fails
+      // This prevents false offline detection when app resumes from background
+      try {
         LoggerService.info('ClockOut Request: ${Api.clock}', tag: 'ClockApi');
         LoggerService.debug(
           'ClockOut Body: ${jsonEncode(body)}',
@@ -293,8 +291,13 @@ class ClockApi {
             "message": "Clock out failed: ${response.body}",
           };
         }
-      } else {
-        // OFFLINE: Queue for later sync
+      } catch (apiError) {
+        // API call failed - queue for offline sync
+        LoggerService.warning(
+          'ClockOut API failed, queuing for offline sync: $apiError',
+          tag: 'ClockApi',
+        );
+
         await PendingSyncService.addPendingAction(
           actionType: 'clock_out',
           payload: body,
@@ -450,14 +453,23 @@ class ClockApi {
         }
       } else {
         // OFFLINE: Return cached status
+        LoggerService.info(
+          '📱 Device is offline, loading from cache',
+          tag: 'ClockApi',
+        );
+        
         final cachedStatus = await OfflineDatabase.getClockStatus();
         if (cachedStatus != null) {
           LoggerService.info(
-            '📱 Loaded clock status from offline cache',
+            '📱 Loaded clock status from offline cache: isClockedIn=${cachedStatus['isClockedIn']}',
             tag: 'ClockApi',
           );
           return cachedStatus;
         } else {
+          LoggerService.warning(
+            '📱 No cached clock status found, returning default (not clocked in)',
+            tag: 'ClockApi',
+          );
           return {"success": true, "isClockedIn": false};
         }
       }

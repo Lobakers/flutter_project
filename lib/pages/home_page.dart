@@ -25,6 +25,7 @@ import 'package:beewhere/widgets/location_map_widget.dart';
 import 'package:beewhere/config/geofence_config.dart';
 import 'package:beewhere/services/connectivity_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -33,7 +34,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Timer? _locationAutoRefreshTimer; // Timer for auto location refresh
   // Location state
   String _currentAddress = "Tap to get location"; // Now stores coordinates
@@ -115,6 +116,37 @@ class _HomePageState extends State<HomePage> {
     _startTimers();
     _startLocationAutoRefresh();
     _initConnectivityListener();
+    
+    // ✨ Add app lifecycle observer to refresh status when app resumes
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    super.didChangeAppLifecycleState(state);
+    
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('📱 App resumed, refreshing clock status');
+      
+      // ✨ Tell background service that app is in foreground
+      try {
+        await FlutterForegroundTask.saveData(key: 'appInForeground', value: true);
+      } catch (e) {
+        debugPrint('⚠️ Error updating foreground flag: $e');
+      }
+      
+      // Refresh clock status from server when app resumes
+      _checkExistingClock();
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      debugPrint('📱 App paused/inactive, background service will take over');
+      
+      // ✨ Tell background service that app is NOT in foreground
+      try {
+        await FlutterForegroundTask.saveData(key: 'appInForeground', value: false);
+      } catch (e) {
+        debugPrint('⚠️ Error updating foreground flag: $e');
+      }
+    }
   }
 
   // ✨ Initialize connectivity listener
@@ -137,9 +169,11 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _timer?.cancel();
+    _locationAutoRefreshTimer?.cancel();
     _activityController.dispose();
     _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
     _connectivitySubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this); // ✨ Remove lifecycle observer
     super.dispose();
   }
 
@@ -152,17 +186,65 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  // ✨ CALLBACK: When user leaves geofence area
-  Future<void> _onUserLeftGeofence(double distance) async {
-    debugPrint(
-      '🚨 AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
-    );
+  // ✨ Flag to prevent multiple simultaneous auto clock-out calls
+  bool _isAutoClockingOut = false;
 
-    if (mounted) {
-      _showAutoClockOutDialog(distance);
+  // ✨ CALLBACK: When user leaves geofence area or location is disabled
+  Future<void> _onUserLeftGeofence(double distance) async {
+    debugPrint('🔔 _onUserLeftGeofence called with distance: $distance, isClockedIn: $_isClockedIn, isAutoClockingOut: $_isAutoClockingOut');
+    
+    // Check if we're still clocked in (prevent duplicate clock-out)
+    if (!_isClockedIn) {
+      debugPrint('⚠️ Already clocked out, ignoring auto clock-out trigger');
+      return;
     }
 
-    await _performClockOut(isAutomatic: true, distance: distance);
+    // Check if already processing an auto clock-out
+    if (_isAutoClockingOut) {
+      debugPrint('⚠️ Auto clock-out already in progress, ignoring duplicate trigger');
+      return;
+    }
+
+    // Set flag to prevent duplicate calls
+    _isAutoClockingOut = true;
+
+    try {
+      // ✨ CRITICAL: Stop background service IMMEDIATELY to prevent duplicate triggers
+      debugPrint('🛑 Stopping background service to prevent duplicate auto clock-out');
+      try {
+        await BackgroundGeofenceService.stopTracking();
+      } catch (e) {
+        debugPrint('⚠️ Error stopping background service: $e');
+      }
+
+      // Special case: distance = -1 means location service was disabled
+      if (distance < 0) {
+        debugPrint('🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Location service DISABLED');
+        
+        if (mounted) {
+          _showLocationDisabledDialog();
+        }
+        
+        await _performClockOut(
+          isAutomatic: true,
+          distance: 0,
+          reason: 'location_disabled',
+        );
+      } else {
+        debugPrint(
+          '🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
+        );
+
+        if (mounted) {
+          _showAutoClockOutDialog(distance);
+        }
+
+        await _performClockOut(isAutomatic: true, distance: distance);
+      }
+    } finally {
+      // Reset flag after clock-out completes
+      _isAutoClockingOut = false;
+    }
   }
 
   void _showAutoClockOutDialog(double distance) {
@@ -185,6 +267,48 @@ class _HomePageState extends State<HomePage> {
               'You have moved ${distance.toStringAsFixed(0)}m away from your work location.',
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.white),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'You have been automatically clocked out.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showLocationDisabledDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: Colors.red,
+        title: const Text(
+          'Auto Clock Out',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.location_disabled, size: 50, color: Colors.white),
+            const SizedBox(height: 10),
+            const Text(
+              'Location service has been disabled.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white),
             ),
             const SizedBox(height: 10),
             const Text(
@@ -343,7 +467,7 @@ class _HomePageState extends State<HomePage> {
       _updateFieldVisibility(_selectedJobType);
 
       // ✨ If already clocked in, restart geofence monitoring
-      _startGeofenceMonitoringForClient(_selectedClient);
+      await _startGeofenceMonitoringForClient(_selectedClient);
     } else if (result['success'] && result['isClockedIn'] == false) {
       // ✨ FIX: If cache said we were clocked in, but server says we are NOT, reset UI
       if (_isClockedIn) {
@@ -618,7 +742,7 @@ class _HomePageState extends State<HomePage> {
     return markers;
   }
 
-  void _startGeofenceMonitoringForClient(String? clientGuid) {
+  Future<void> _startGeofenceMonitoringForClient(String? clientGuid) async {
     // Use user's current location as geofence center (where they clocked in)
     // This way, auto clock-out triggers when they move 500m from their clock-in position
     final targetLat = _latitude;
@@ -642,7 +766,7 @@ class _HomePageState extends State<HomePage> {
     debugPrint('   Check interval: 15s');
     debugPrint('   Required violations: 2');
 
-    _autoClockOutService?.startMonitoring(
+    await _autoClockOutService?.startMonitoring(
       targetLat: targetLat,
       targetLng: targetLng,
       targetAddress: targetAddress,
@@ -761,10 +885,17 @@ class _HomePageState extends State<HomePage> {
       });
 
       // ✨ START GEOFENCE MONITORING AFTER CLOCK IN
-      _startGeofenceMonitoringForClient(_selectedClient);
+      await _startGeofenceMonitoringForClient(_selectedClient);
 
       // ✨ REQUEST NOTIFICATION PERMISSION AND START BACKGROUND TRACKING
       await _startBackgroundTracking();
+      
+      // ✨ Set initial foreground flag (app is currently open)
+      try {
+        await FlutterForegroundTask.saveData(key: 'appInForeground', value: true);
+      } catch (e) {
+        debugPrint('⚠️ Error setting initial foreground flag: $e');
+      }
 
       _showSuccessDialog(
         'Clock In Successful',
@@ -786,6 +917,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _performClockOut({
     bool isAutomatic = false,
     double? distance,
+    String? reason,
   }) async {
     if (_clockRefGuid == null) {
       _showDialog('Error', 'No clock in record found');
@@ -831,6 +963,7 @@ class _HomePageState extends State<HomePage> {
         await NotificationService.showAutoClockOutNotification(
           distance: distance ?? 0.0,
           location: _currentAddress ?? 'Work Location',
+          reason: reason,
         );
       }
 
@@ -848,11 +981,28 @@ class _HomePageState extends State<HomePage> {
     } else {
       // ✨ Check for multi-device conflict
       if (result['multiDeviceConflict'] == true) {
-        _showMultiDeviceConflictDialog(
-          'Already Clocked Out',
-          result['message'] ??
-              'You have already clocked out on another device.',
-        );
+        // If it's automatic clock-out, just update UI silently (already clocked out)
+        if (isAutomatic) {
+          debugPrint('⚠️ Auto clock-out: Already clocked out on another device, updating UI');
+          setState(() {
+            _isClockedIn = false;
+            _clockRefGuid = null;
+            _clockStatus = "You Haven't Clocked In Yet";
+            _selectedJobType = '';
+            _selectedClient = null;
+            _selectedProject = null;
+            _selectedContract = null;
+            _activityController.clear();
+            _fieldVisibility = {};
+          });
+        } else {
+          // Manual clock-out: show dialog
+          _showMultiDeviceConflictDialog(
+            'Already Clocked Out',
+            result['message'] ??
+                'You have already clocked out on another device.',
+          );
+        }
       } else {
         _showDialog('Error', result['message'] ?? 'Clock out failed');
       }
@@ -1204,23 +1354,64 @@ class _HomePageState extends State<HomePage> {
 
     try {
       // CASE 1: ISO 8601 with 'Z' (e.g., "2025-12-04T11:40:04.000Z")
-      // The API sends Local Time but marks it as UTC 'Z'.
+      // The API sends UTC time with 'Z' marker
       if (timeString.contains('T') && timeString.endsWith('Z')) {
-        final localString = timeString.substring(0, timeString.length - 1);
-        return DateTime.parse(localString);
+        final utcTime = DateTime.parse(timeString);
+        final localTime = utcTime.toLocal();
+        return localTime;
       }
-      // CASE 2: Space separated (e.g., "2025-12-04 03:40:27")
-      // The API sends UTC time but without timezone info.
+      // CASE 2: Space separated (e.g., "2025-12-04 03:40:27" or "2025-12-04 15:40:27")
+      // The API returns UTC time in space-separated format
+      // BUT we need to detect if it's already been converted to local
       else if (timeString.contains(' ') && !timeString.contains('T')) {
-        final isoString = timeString.replaceAll(' ', 'T') + 'Z';
-        return DateTime.parse(isoString).toLocal();
+        final isoString = timeString.replaceAll(' ', 'T');
+        
+        // Parse as UTC first
+        final utcTime = DateTime.parse(isoString + 'Z');
+        final localTime = utcTime.toLocal();
+        
+        // Check if the converted time is reasonable (within 1 hour of now)
+        // If the UTC->Local conversion gives us a time very close to now, it's correct
+        // If it gives us a time 8 hours in the future, the original was already local
+        final now = DateTime.now();
+        final differenceInMinutes = localTime.difference(now).inMinutes.abs();
+        
+        if (differenceInMinutes < 60) {
+          // Converted time is within 1 hour of now - correct UTC conversion
+          return localTime;
+        } else {
+          // Converted time is far from now - original was already local time
+          final originalAsLocal = DateTime.parse(isoString);
+          return originalAsLocal;
+        }
       }
-      // CASE 3: Standard ISO
+      // CASE 3: ISO format without Z (e.g., "2025-12-04T11:40:04" or "2025-12-04T11:40:04.123456")
+      // Need to detect if it's UTC or already local time
+      else if (timeString.contains('T')) {
+        // Try UTC conversion first
+        final utcTime = DateTime.parse(timeString + 'Z');
+        final localTime = utcTime.toLocal();
+        
+        // Check if the converted time is reasonable (within 1 hour of now)
+        final now = DateTime.now();
+        final differenceInMinutes = localTime.difference(now).inMinutes.abs();
+        
+        if (differenceInMinutes < 60) {
+          // Converted time is within 1 hour of now - correct UTC conversion
+          return localTime;
+        } else {
+          // Converted time is far from now - original was already local time
+          final originalAsLocal = DateTime.parse(timeString);
+          return originalAsLocal;
+        }
+      }
+      // CASE 4: Fallback
       else {
-        return DateTime.parse(timeString);
+        final time = DateTime.parse(timeString);
+        return time;
       }
     } catch (e) {
-      debugPrint('Error parsing time: $e');
+      debugPrint('❌ Error parsing clock time "$timeString": $e');
       return null;
     }
   }

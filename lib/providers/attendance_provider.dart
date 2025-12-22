@@ -188,6 +188,7 @@ class AttendanceProvider with ChangeNotifier {
       officeAutoClockOutRange =
           (property['office']['autoclockout_filter']['range'] as num?)
               ?.toDouble();
+      debugPrint('📏 Office auto clock-out range: $officeAutoClockOutRange m');
     }
 
     if (property['site'] != null &&
@@ -196,6 +197,7 @@ class AttendanceProvider with ChangeNotifier {
       siteAutoClockOutRange =
           (property['site']['autoclockout_filter']['range'] as num?)
               ?.toDouble();
+      debugPrint('📏 Site auto clock-out range: $siteAutoClockOutRange m');
     }
 
     if (property['home'] != null &&
@@ -204,6 +206,7 @@ class AttendanceProvider with ChangeNotifier {
       homeAutoClockOutRange =
           (property['home']['autoclockout_filter']['range'] as num?)
               ?.toDouble();
+      debugPrint('📏 Home auto clock-out range: $homeAutoClockOutRange m');
     }
 
     if (property['others'] != null &&
@@ -212,6 +215,7 @@ class AttendanceProvider with ChangeNotifier {
       othersAutoClockOutRange =
           (property['others']['autoclockout_filter']['range'] as num?)
               ?.toDouble();
+      debugPrint('📏 Others auto clock-out range: $othersAutoClockOutRange m');
     }
   }
 

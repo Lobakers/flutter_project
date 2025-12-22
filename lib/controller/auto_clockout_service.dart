@@ -8,7 +8,7 @@ import 'package:geolocator/geolocator.dart';
 typedef OnLeaveGeofence = Future<void> Function(double distance);
 
 class AutoClockOutService {
-  StreamSubscription<Position>? _positionStreamSubscription;
+  Timer? _checkTimer; // ✨ Changed from position stream to timer
   final StreamController<Map<String, dynamic>> _statusController =
       StreamController<Map<String, dynamic>>.broadcast();
 
@@ -32,6 +32,10 @@ class AutoClockOutService {
   // ✨ GPS drift protection
   int _violationCount = 0;
   int _requiredViolations = GeofenceConfig.requiredViolations;
+  
+  // ✨ Minimum time before auto clock-out can trigger (prevents immediate trigger)
+  DateTime? _monitoringStartTime;
+  static const Duration _minimumClockInDuration = Duration(seconds: 30);
 
   AutoClockOutService({
     this.checkInterval = GeofenceConfig.autoClockOutCheckInterval,
@@ -45,12 +49,12 @@ class AutoClockOutService {
   String? get targetAddress => _targetAddress;
 
   /// Start monitoring user location
-  void startMonitoring({
+  Future<void> startMonitoring({
     required double targetLat,
     required double targetLng,
     String? targetAddress,
     double? radiusInMeters, // ✨ Optional override
-  }) {
+  }) async {
     if (_isMonitoring) {
       debugPrint('⚠️ Already monitoring, stopping previous session');
       stopMonitoring();
@@ -65,39 +69,76 @@ class AutoClockOutService {
     }
     _isMonitoring = true;
     _violationCount = 0; // Reset violation counter
+    _monitoringStartTime = DateTime.now(); // ✨ Track when monitoring started
 
     debugPrint('🎯 Started geofence monitoring');
     debugPrint('   Target: $_targetLat, $_targetLng');
-    debugPrint('   Radius: ${radiusInMeters}m');
+    debugPrint('   Radius: ${this.radiusInMeters}m');
     debugPrint('   Check interval: ${checkInterval.inSeconds}s');
     debugPrint('   Required violations: $_requiredViolations');
+    debugPrint('   Minimum duration: ${_minimumClockInDuration.inSeconds}s');
 
-    // Start stream
-    final locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 5, // Update every 5 meters
-    );
+    // Start location service monitoring
+    _startLocationServiceMonitoring();
 
-    _positionStreamSubscription =
-        Geolocator.getPositionStream(locationSettings: locationSettings).listen(
-          (Position position) {
-            _checkLocation(position);
-          },
-          onError: (e) {
-            debugPrint('❌ Location stream error: $e');
-          },
+    // ✨ NEW: Use Timer.periodic instead of position stream
+    // This respects the configured checkInterval (e.g., 3 minutes)
+    _checkTimer = Timer.periodic(checkInterval, (timer) async {
+      if (!_isMonitoring) {
+        timer.cancel();
+        return;
+      }
+      
+      try {
+        // Get current position
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 10),
         );
+        
+        await _checkLocation(position);
+      } catch (e) {
+        debugPrint('❌ Error getting position: $e');
+        
+        // Check if error is due to location service being disabled
+        final isEnabled = await _checkLocationServiceStatus();
+        if (!isEnabled) {
+          debugPrint('🚨 Location service disabled (detected via error)');
+          
+          // Trigger callback
+          if (onLeaveGeofence != null) {
+            await onLeaveGeofence!(-1.0);
+          }
+          
+          stopMonitoring();
+        }
+      }
+    });
+    
+    // ✨ Do an immediate first check (don't wait for first interval)
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
+      );
+      await _checkLocation(position);
+    } catch (e) {
+      debugPrint('❌ Error on initial position check: $e');
+    }
   }
 
   /// Stop monitoring
   void stopMonitoring() {
-    _positionStreamSubscription?.cancel();
-    _positionStreamSubscription = null;
+    _checkTimer?.cancel();
+    _checkTimer = null;
+    _locationServiceCheckTimer?.cancel();
+    _locationServiceCheckTimer = null;
     _isMonitoring = false;
     _targetLat = null;
     _targetLng = null;
     _targetAddress = null;
     _violationCount = 0; // Reset counter
+    _monitoringStartTime = null; // ✨ Reset monitoring start time
     debugPrint('🛑 Stopped geofence monitoring');
   }
 
@@ -124,6 +165,17 @@ class AutoClockOutService {
 
       // ✨ NEW: Check if outside radius (with violation counter)
       if (distance > radiusInMeters) {
+        // ✨ Check if minimum time has elapsed since monitoring started
+        if (_monitoringStartTime != null) {
+          final elapsed = DateTime.now().difference(_monitoringStartTime!);
+          if (elapsed < _minimumClockInDuration) {
+            debugPrint(
+              '⏰ Too soon for auto clock-out (${elapsed.inSeconds}s / ${_minimumClockInDuration.inSeconds}s). Ignoring violation.',
+            );
+            return; // Don't count violations yet
+          }
+        }
+
         _violationCount++;
         debugPrint(
           '⚠️ Violation $_violationCount/$_requiredViolations: ${distance.toStringAsFixed(2)}m > ${radiusInMeters}m',
@@ -174,6 +226,47 @@ class AutoClockOutService {
     } catch (e) {
       debugPrint('❌ Error checking location: $e');
     }
+  }
+
+  /// Check if location services are enabled
+  /// Returns true if enabled, false if disabled
+  Future<bool> _checkLocationServiceStatus() async {
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      return serviceEnabled;
+    } catch (e) {
+      debugPrint('❌ Error checking location service status: $e');
+      return false;
+    }
+  }
+
+  /// Start periodic check for location service status
+  Timer? _locationServiceCheckTimer;
+
+  void _startLocationServiceMonitoring() {
+    // Check every 5 seconds if location service is still enabled
+    _locationServiceCheckTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (timer) async {
+        if (!_isMonitoring) {
+          timer.cancel();
+          return;
+        }
+
+        final isEnabled = await _checkLocationServiceStatus();
+        if (!isEnabled) {
+          debugPrint('🚨 Location service DISABLED! Triggering auto clock-out');
+          
+          // Trigger callback with a special distance value (-1) to indicate location disabled
+          if (onLeaveGeofence != null) {
+            await onLeaveGeofence!(-1.0);
+          }
+
+          // Stop monitoring
+          stopMonitoring();
+        }
+      },
+    );
   }
 
   /// Manually check location (for testing or refresh button)

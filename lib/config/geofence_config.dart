@@ -12,7 +12,7 @@ class GeofenceConfig {
 
   /// Client Filtering Radius (for nearby clients dropdown)
   /// This determines which clients appear in the dropdown based on proximity
-  static const double clientFilterRadius = 250.0;
+  static const double clientFilterRadius = 300.0;
 
   /// Map Display Radius (visual circle on map)
   /// This is the radius of the circle shown on the map when geofence is active
@@ -23,12 +23,14 @@ class GeofenceConfig {
   /// Auto Clock-Out Check Interval (foreground monitoring)
   /// How often to check if user is still within the geofence area
   /// Default: 15 seconds
-  static const Duration autoClockOutCheckInterval = Duration(minutes: 3);
+  static const Duration autoClockOutCheckInterval = Duration(minutes: 3); //prod
+  // static const Duration autoClockOutCheckInterval = Duration(seconds: 15); //dev
 
   /// Background Geofence Check Interval
   /// How often to check location when app is in background
   /// Default: 30 seconds (longer to save battery)
-  static const Duration backgroundCheckInterval = Duration(minutes: 3);
+  static const Duration backgroundCheckInterval = Duration(minutes: 3); //prod
+  // static const Duration backgroundCheckInterval = Duration(seconds: 15); //dev
 
   /// Required Violation Count
   /// Number of consecutive violations before triggering auto clock-out

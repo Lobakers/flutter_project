@@ -8,6 +8,7 @@ import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/services/storage_service.dart';
 import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/services/pending_sync_service.dart';
+import 'package:beewhere/services/offline_database.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -26,12 +27,23 @@ class BackgroundGeofenceService {
     required double radiusInMeters,
     required String clockRefGuid,
   }) async {
-    if (_isRunning) {
+    // ✨ FIX: Always stop existing service first to ensure clean restart
+    // This prevents multiple services from running simultaneously
+    try {
+      if (await FlutterForegroundTask.isRunningService) {
+        LoggerService.warning(
+          'Background service already running, stopping for clean restart',
+          tag: 'BackgroundGeofence',
+        );
+        await FlutterForegroundTask.stopService();
+        // Wait for service to fully stop
+        await Future.delayed(const Duration(milliseconds: 800));
+      }
+    } catch (e) {
       LoggerService.warning(
-        'Background tracking already running',
+        'Error checking/stopping existing service: $e',
         tag: 'BackgroundGeofence',
       );
-      return;
     }
 
     // Save tracking state to storage
@@ -109,6 +121,20 @@ class BackgroundGeofenceService {
 /// This runs every 15 seconds in the background
 @pragma('vm:entry-point')
 void startCallback() {
+  // ✨ Initialize OfflineDatabase in background isolate
+  OfflineDatabase.init().then((_) {
+    LoggerService.info(
+      'OfflineDatabase initialized in background isolate',
+      tag: 'BackgroundGeofence',
+    );
+  }).catchError((e) {
+    LoggerService.error(
+      'Failed to initialize OfflineDatabase in background isolate',
+      tag: 'BackgroundGeofence',
+      error: e,
+    );
+  });
+  
   FlutterForegroundTask.setTaskHandler(GeofenceTaskHandler());
 }
 
@@ -136,6 +162,17 @@ class GeofenceTaskHandler extends TaskHandler {
   /// Check if user is outside geofence
   Future<void> _checkGeofence() async {
     try {
+      // ✨ Check if app is in foreground - if so, skip background check
+      // The foreground service (AutoClockOutService) will handle it
+      final appInForeground = await FlutterForegroundTask.getData<bool>(key: 'appInForeground');
+      if (appInForeground == true) {
+        LoggerService.debug(
+          'App is in foreground, skipping background check (foreground service handles it)',
+          tag: 'GeofenceTaskHandler',
+        );
+        return;
+      }
+
       // Get tracking state from storage
       final state = await StorageService.getClockInState();
 
@@ -161,11 +198,51 @@ class GeofenceTaskHandler extends TaskHandler {
         return;
       }
 
+      // ✨ Check if location service is enabled
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        LoggerService.error(
+          'Location service DISABLED! Triggering auto clock-out',
+          tag: 'GeofenceTaskHandler',
+        );
+
+        await _performAutoClockOut(
+          -1.0, // Special value to indicate location disabled
+          targetAddress ?? 'work location',
+          reason: 'location_disabled',
+        );
+        return;
+      }
+
       // Get current location
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 10),
-      );
+      Position? position;
+      try {
+        position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 10),
+        );
+      } catch (e) {
+        // If we can't get location, check if service is disabled
+        final stillEnabled = await Geolocator.isLocationServiceEnabled();
+        if (!stillEnabled) {
+          LoggerService.error(
+            'Location service disabled (detected via error)',
+            tag: 'GeofenceTaskHandler',
+          );
+
+          await _performAutoClockOut(
+            -1.0,
+            targetAddress ?? 'work location',
+            reason: 'location_disabled',
+          );
+        } else {
+          LoggerService.error(
+            'Failed to get location: $e',
+            tag: 'GeofenceTaskHandler',
+          );
+        }
+        return;
+      }
 
       // Calculate distance
       final distance = GeofenceHelper.calculateDistance(
@@ -221,12 +298,26 @@ class GeofenceTaskHandler extends TaskHandler {
   }
 
   /// Perform automatic clock-out
-  Future<void> _performAutoClockOut(double distance, String location) async {
+  Future<void> _performAutoClockOut(
+    double distance,
+    String location, {
+    String? reason,
+  }) async {
     try {
       LoggerService.info(
-        'Starting auto clock-out process',
+        'Starting auto clock-out process (BACKGROUND)',
         tag: 'GeofenceTaskHandler',
       );
+
+      // ✨ DOUBLE-CHECK: Is app in foreground? If so, abort (foreground service handles it)
+      final appInForeground = await FlutterForegroundTask.getData<bool>(key: 'appInForeground');
+      if (appInForeground == true) {
+        LoggerService.warning(
+          'App is in foreground during clock-out attempt, aborting (foreground service will handle it)',
+          tag: 'GeofenceTaskHandler',
+        );
+        return;
+      }
 
       // Get clock state
       final state = await StorageService.getClockInState();
@@ -234,9 +325,11 @@ class GeofenceTaskHandler extends TaskHandler {
 
       if (clockRefGuid == null) {
         LoggerService.error(
-          'No clockRefGuid found',
+          'No clockRefGuid found, user may have already clocked out',
           tag: 'GeofenceTaskHandler',
         );
+        // Stop tracking since there's no active clock-in
+        await FlutterForegroundTask.stopService();
         return;
       }
 
@@ -318,19 +411,80 @@ class GeofenceTaskHandler extends TaskHandler {
           tag: 'GeofenceTaskHandler',
         );
 
-        await PendingSyncService.addPendingAction(
-          actionType: 'clock_out',
-          payload: clockOutPayload,
-        );
+        // ✨ CRITICAL: Ensure PendingSyncService is initialized in background isolate
+        // The background isolate has its own database connection
+        try {
+          await PendingSyncService.init();
+          LoggerService.info(
+            '✅ PendingSyncService initialized in background isolate',
+            tag: 'GeofenceTaskHandler',
+          );
+          
+          await PendingSyncService.addPendingAction(
+            actionType: 'clock_out',
+            payload: clockOutPayload,
+          );
+          
+          // Verify it was added
+          final pendingCount = await PendingSyncService.getPendingCount();
+          LoggerService.info(
+            '✅ Clock-out action queued. Total pending actions: $pendingCount',
+            tag: 'GeofenceTaskHandler',
+          );
+          
+          // List all pending actions for debugging
+          final allActions = await PendingSyncService.getPendingActions();
+          LoggerService.debug(
+            '📋 All pending actions: ${allActions.map((a) => a['action_type']).join(', ')}',
+            tag: 'GeofenceTaskHandler',
+          );
+        } catch (e) {
+          LoggerService.error(
+            'Failed to queue clock-out action',
+            tag: 'GeofenceTaskHandler',
+            error: e,
+          );
+        }
 
         // Show notification
         await NotificationService.showAutoClockOutNotification(
           distance: distance,
           location: location,
+          reason: reason,
         );
 
         // Clear clock-in state
         await StorageService.clearClockInState();
+
+        // ✨ CRITICAL: Update OfflineDatabase to clocked-out status
+        // This prevents foreground service from restarting monitoring when app reopens
+        try {
+          // Ensure OfflineDatabase is initialized before updating
+          await OfflineDatabase.init();
+          
+          await OfflineDatabase.saveClockStatus({
+            'isClockedIn': false,
+            'clockLogGuid': null,
+            'clockTime': null,
+            'jobType': null,
+            'address': null,
+            'clientId': null,
+            'projectId': null,
+            'contractId': null,
+            'activityName': null,
+          });
+          
+          LoggerService.info(
+            '✅ Updated OfflineDatabase to clocked-out status (OFFLINE)',
+            tag: 'GeofenceTaskHandler',
+          );
+        } catch (e) {
+          LoggerService.error(
+            'Failed to update OfflineDatabase: $e',
+            tag: 'GeofenceTaskHandler',
+            error: e,
+          );
+        }
 
         // Stop tracking
         await FlutterForegroundTask.stopService();
@@ -352,7 +506,7 @@ class GeofenceTaskHandler extends TaskHandler {
       }
 
       final response = await http.post(
-        Uri.parse('https://devamscore.beesuite.app/api/clock/transaction'),
+        Uri.parse('https://amscore.beesuite.app/api/clock/transaction'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'JWT $token',
@@ -370,6 +524,7 @@ class GeofenceTaskHandler extends TaskHandler {
         await NotificationService.showAutoClockOutNotification(
           distance: distance,
           location: location,
+          reason: reason,
         );
       } else {
         LoggerService.error(
@@ -381,6 +536,36 @@ class GeofenceTaskHandler extends TaskHandler {
       // Clear clock-in state
       await StorageService.clearClockInState();
 
+      // ✨ FIX: Update offline database cache to reflect clocked-out status
+      // This ensures UI updates correctly when app resumes
+      try {
+        // Ensure OfflineDatabase is initialized before updating
+        await OfflineDatabase.init();
+        
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': false,
+          'clockLogGuid': null,
+          'clockTime': null,
+          'jobType': null,
+          'address': null,
+          'clientId': null,
+          'projectId': null,
+          'contractId': null,
+          'activityName': null,
+        });
+        
+        LoggerService.info(
+          '✅ Updated offline database cache to clocked-out status (ONLINE)',
+          tag: 'GeofenceTaskHandler',
+        );
+      } catch (e) {
+        LoggerService.error(
+          'Failed to update offline database: $e',
+          tag: 'GeofenceTaskHandler',
+          error: e,
+        );
+      }
+
       // Wait a bit to ensure notification is posted
       await Future.delayed(const Duration(seconds: 2));
 
@@ -388,7 +573,7 @@ class GeofenceTaskHandler extends TaskHandler {
       await FlutterForegroundTask.stopService();
 
       LoggerService.info(
-        'Auto clock-out completed',
+        'Auto clock-out completed (BACKGROUND)',
         tag: 'GeofenceTaskHandler',
       );
     } catch (e, stackTrace) {
@@ -398,6 +583,17 @@ class GeofenceTaskHandler extends TaskHandler {
         error: e,
         stackTrace: stackTrace,
       );
+      
+      // Ensure service stops even on error
+      try {
+        await FlutterForegroundTask.stopService();
+      } catch (stopError) {
+        LoggerService.error(
+          'Failed to stop service after error',
+          tag: 'GeofenceTaskHandler',
+          error: stopError,
+        );
+      }
     }
   }
 }

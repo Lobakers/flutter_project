@@ -1,4 +1,4 @@
-package com.example.beewhere
+package com.zen.beewhere
 
 import io.flutter.embedding.android.FlutterFragmentActivity
 

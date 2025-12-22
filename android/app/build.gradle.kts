@@ -16,7 +16,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.beewhere"
+    namespace = "com.zen.beewhere"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -31,7 +31,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.beewhere"
+        applicationId = "com.zen.beewhere"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
