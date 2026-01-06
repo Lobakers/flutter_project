@@ -10,6 +10,7 @@ import 'package:beewhere/controller/auto_clockout_service.dart';
 import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/services/background_geofence_service.dart';
 import 'package:beewhere/services/notification_service.dart';
+import 'package:beewhere/services/location_permission_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
@@ -116,7 +117,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _startTimers();
     _startLocationAutoRefresh();
     _initConnectivityListener();
-    
+
     // ✨ Add app lifecycle observer to refresh status when app resumes
     WidgetsBinding.instance.addObserver(this);
   }
@@ -124,25 +125,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
     super.didChangeAppLifecycleState(state);
-    
+
     if (state == AppLifecycleState.resumed) {
       debugPrint('📱 App resumed, refreshing clock status');
-      
+
       // ✨ Tell background service that app is in foreground
       try {
-        await FlutterForegroundTask.saveData(key: 'appInForeground', value: true);
+        await FlutterForegroundTask.saveData(
+          key: 'appInForeground',
+          value: true,
+        );
       } catch (e) {
         debugPrint('⚠️ Error updating foreground flag: $e');
       }
-      
+
       // Refresh clock status from server when app resumes
       _checkExistingClock();
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
       debugPrint('📱 App paused/inactive, background service will take over');
-      
+
       // ✨ Tell background service that app is NOT in foreground
       try {
-        await FlutterForegroundTask.saveData(key: 'appInForeground', value: false);
+        await FlutterForegroundTask.saveData(
+          key: 'appInForeground',
+          value: false,
+        );
       } catch (e) {
         debugPrint('⚠️ Error updating foreground flag: $e');
       }
@@ -191,8 +199,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // ✨ CALLBACK: When user leaves geofence area or location is disabled
   Future<void> _onUserLeftGeofence(double distance) async {
-    debugPrint('🔔 _onUserLeftGeofence called with distance: $distance, isClockedIn: $_isClockedIn, isAutoClockingOut: $_isAutoClockingOut');
-    
+    debugPrint(
+      '🔔 _onUserLeftGeofence called with distance: $distance, isClockedIn: $_isClockedIn, isAutoClockingOut: $_isAutoClockingOut',
+    );
+
     // Check if we're still clocked in (prevent duplicate clock-out)
     if (!_isClockedIn) {
       debugPrint('⚠️ Already clocked out, ignoring auto clock-out trigger');
@@ -201,7 +211,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     // Check if already processing an auto clock-out
     if (_isAutoClockingOut) {
-      debugPrint('⚠️ Auto clock-out already in progress, ignoring duplicate trigger');
+      debugPrint(
+        '⚠️ Auto clock-out already in progress, ignoring duplicate trigger',
+      );
       return;
     }
 
@@ -210,7 +222,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     try {
       // ✨ CRITICAL: Stop background service IMMEDIATELY to prevent duplicate triggers
-      debugPrint('🛑 Stopping background service to prevent duplicate auto clock-out');
+      debugPrint(
+        '🛑 Stopping background service to prevent duplicate auto clock-out',
+      );
       try {
         await BackgroundGeofenceService.stopTracking();
       } catch (e) {
@@ -219,12 +233,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       // Special case: distance = -1 means location service was disabled
       if (distance < 0) {
-        debugPrint('🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Location service DISABLED');
-        
+        debugPrint(
+          '🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Location service DISABLED',
+        );
+
         if (mounted) {
           _showLocationDisabledDialog();
         }
-        
+
         await _performClockOut(
           isAutomatic: true,
           distance: 0,
@@ -492,6 +508,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // ===================== LOCATION =====================
 
+  // ✨ UPDATED: Only check foreground location permission
+  // Background location is checked separately before clock-in
   Future<bool> _handleLocationPermission() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -509,7 +527,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
 
     if (permission == LocationPermission.deniedForever) {
-      _showSnackBar('Location permissions permanently denied');
+      _showSnackBar(
+        'Location permissions permanently denied. Please enable in settings.',
+      );
       return false;
     }
     return true;
@@ -849,6 +869,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
 
+    // Validation 4: Background location permission required (only for clock in)
+    if (!_isClockedIn) {
+      final hasPermission =
+          await LocationPermissionService.hasBackgroundPermission();
+      if (!hasPermission) {
+        _showPermissionRequiredDialog();
+        return;
+      }
+    }
+
     if (_isClockedIn) {
       await _performClockOut();
     } else {
@@ -889,10 +919,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       // ✨ REQUEST NOTIFICATION PERMISSION AND START BACKGROUND TRACKING
       await _startBackgroundTracking();
-      
+
       // ✨ Set initial foreground flag (app is currently open)
       try {
-        await FlutterForegroundTask.saveData(key: 'appInForeground', value: true);
+        await FlutterForegroundTask.saveData(
+          key: 'appInForeground',
+          value: true,
+        );
       } catch (e) {
         debugPrint('⚠️ Error setting initial foreground flag: $e');
       }
@@ -983,7 +1016,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (result['multiDeviceConflict'] == true) {
         // If it's automatic clock-out, just update UI silently (already clocked out)
         if (isAutomatic) {
-          debugPrint('⚠️ Auto clock-out: Already clocked out on another device, updating UI');
+          debugPrint(
+            '⚠️ Auto clock-out: Already clocked out on another device, updating UI',
+          );
           setState(() {
             _isClockedIn = false;
             _clockRefGuid = null;
@@ -1148,6 +1183,274 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       ),
                     ),
                   ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ✨ NEW: Show permission required dialog with option to request or open settings
+  void _showPermissionRequiredDialog() async {
+    if (!mounted) return;
+
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFFEF4444), // Red
+                Color(0xFFDC2626), // Dark red
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.location_off,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'Background Location Required',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'This app requires background location access to automatically clock you out when you leave your work location.\n\nThis is a core feature and cannot be disabled.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Buttons
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context, 'cancel'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Colors.white, width: 2),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context, 'request'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFFEF4444),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Grant Permission',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    // Handle user choice
+    if (result == 'request') {
+      // Request permission with disclosure
+      final granted =
+          await LocationPermissionService.requestLocationPermissions(context);
+
+      if (!granted) {
+        // Permission denied, show option to open settings
+        if (mounted) {
+          _showOpenSettingsDialog();
+        }
+      }
+    }
+  }
+
+  // ✨ NEW: Show dialog to open app settings
+  void _showOpenSettingsDialog() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFFF59E0B), // Orange
+                Color(0xFFEA580C), // Dark orange
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.settings,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'Permission Denied',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'You need to manually grant background location permission in app settings.\n\nGo to Settings → Permissions → Location → Allow all the time',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Buttons
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Colors.white, width: 2),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          await LocationPermissionService.openAppSettings();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFFF59E0B),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Open Settings',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -1365,17 +1668,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       // BUT we need to detect if it's already been converted to local
       else if (timeString.contains(' ') && !timeString.contains('T')) {
         final isoString = timeString.replaceAll(' ', 'T');
-        
+
         // Parse as UTC first
         final utcTime = DateTime.parse(isoString + 'Z');
         final localTime = utcTime.toLocal();
-        
+
         // Check if the converted time is reasonable (within 1 hour of now)
         // If the UTC->Local conversion gives us a time very close to now, it's correct
         // If it gives us a time 8 hours in the future, the original was already local
         final now = DateTime.now();
         final differenceInMinutes = localTime.difference(now).inMinutes.abs();
-        
+
         if (differenceInMinutes < 60) {
           // Converted time is within 1 hour of now - correct UTC conversion
           return localTime;
@@ -1391,11 +1694,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         // Try UTC conversion first
         final utcTime = DateTime.parse(timeString + 'Z');
         final localTime = utcTime.toLocal();
-        
+
         // Check if the converted time is reasonable (within 1 hour of now)
         final now = DateTime.now();
         final differenceInMinutes = localTime.difference(now).inMinutes.abs();
-        
+
         if (differenceInMinutes < 60) {
           // Converted time is within 1 hour of now - correct UTC conversion
           return localTime;
