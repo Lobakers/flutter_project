@@ -118,6 +118,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _startLocationAutoRefresh();
     _initConnectivityListener();
 
+    // ✨ Request background location permission on startup
+    // Use addPostFrameCallback to ensure context is valid for showing dialogs
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initLocationAndClock();
+    });
+
     // ✨ Add app lifecycle observer to refresh status when app resumes
     WidgetsBinding.instance.addObserver(this);
   }
@@ -404,9 +410,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await DeviceInfoHelper.init();
     await _loadAttendanceProfile();
     await _loadDropdownData();
-    // ✅ FIX: Get location FIRST before checking clock status
-    // This ensures _latitude and _longitude are available for geofence monitoring
+    // Logic moved to _initLocationAndClock to allow UI to build first
+  }
+
+  // ✨ NEW: Handle permissions, location, and clock status after frame build
+  Future<void> _initLocationAndClock() async {
+    if (!mounted) return;
+
+    // 1. Show Prominent Disclosure & Request Permissions
+    // This will show the "Purple" dialog if background permission is missing
+    final granted = await LocationPermissionService.requestLocationPermissions(
+      context,
+    );
+
+    // ✨ FIX: If user declines on startup, show the warning immediately
+    if (!granted && mounted) {
+      _showOpenSettingsDialog();
+    }
+
+    // 2. Get Location
+    // This handles foreground permission if not already granted
     await _getCurrentPosition();
+
+    // 3. Check Clock Status
+    // This uses location for geofence monitoring
     await _checkExistingClock();
   }
 
@@ -874,8 +901,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final hasPermission =
           await LocationPermissionService.hasBackgroundPermission();
       if (!hasPermission) {
-        _showPermissionRequiredDialog();
-        return;
+        // ✨ Simplified: Go directly to disclosure request instead of showing Red dialog first
+        final granted =
+            await LocationPermissionService.requestLocationPermissions(context);
+        if (!granted) {
+          if (mounted) _showOpenSettingsDialog();
+          return;
+        }
       }
     }
 
@@ -1190,146 +1222,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
       ),
     );
-  }
-
-  // ✨ NEW: Show permission required dialog with option to request or open settings
-  void _showPermissionRequiredDialog() async {
-    if (!mounted) return;
-
-    final result = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        elevation: 8,
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFFEF4444), // Red
-                Color(0xFFDC2626), // Dark red
-              ],
-            ),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Icon section
-              Container(
-                margin: const EdgeInsets.only(top: 24),
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.location_off,
-                  color: Colors.white,
-                  size: 40,
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Title
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24),
-                child: Text(
-                  'Background Location Required',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              // Message
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Text(
-                  'This app requires background location access to automatically clock you out when you leave your work location.\n\nThis is a core feature and cannot be disabled.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.9),
-                    fontSize: 14,
-                    height: 1.5,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              // Buttons
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.pop(context, 'cancel'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: const BorderSide(color: Colors.white, width: 2),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child: const Text(
-                          'Cancel',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(context, 'request'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: const Color(0xFFEF4444),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child: const Text(
-                          'Grant Permission',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    // Handle user choice
-    if (result == 'request') {
-      // Request permission with disclosure
-      final granted =
-          await LocationPermissionService.requestLocationPermissions(context);
-
-      if (!granted) {
-        // Permission denied, show option to open settings
-        if (mounted) {
-          _showOpenSettingsDialog();
-        }
-      }
-    }
   }
 
   // ✨ NEW: Show dialog to open app settings
