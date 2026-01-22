@@ -30,24 +30,24 @@ class LocationPermissionService {
       return true;
     }
 
-    // Step 2: Request foreground location first
+    // Step 2: Show prominent disclosure BEFORE requesting any permissions
+    final userAcceptedDisclosure = await _showProminentDisclosure(context);
+    if (!userAcceptedDisclosure) {
+      debugPrint('❌ User declined disclosure');
+      return false;
+    }
+
+    // Step 3: Request foreground location
     final foregroundGranted = await _requestForegroundLocation(context);
     if (!foregroundGranted) {
       debugPrint('❌ Foreground location permission denied');
       return false;
     }
 
-    // Step 3: Check if background location is already granted
+    // Step 4: Check if background location is already granted
     if (await hasBackgroundPermission()) {
       debugPrint('✅ Background location already granted');
       return true;
-    }
-
-    // Step 4: Show prominent disclosure before requesting background location
-    final userAcceptedDisclosure = await _showProminentDisclosure(context);
-    if (!userAcceptedDisclosure) {
-      debugPrint('❌ User declined disclosure');
-      return false;
     }
 
     // Step 5: Request background location permission

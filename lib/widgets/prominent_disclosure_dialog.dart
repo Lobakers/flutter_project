@@ -52,7 +52,7 @@ class ProminentDisclosureDialog extends StatelessWidget {
 
                 // Title
                 const Text(
-                  'Background Location Access',
+                  'Location Access Disclosure',
                   style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
@@ -73,7 +73,7 @@ class ProminentDisclosureDialog extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'This app requires access to your location in the background to:',
+                        'BeeWhere collects location data to enable attendance tracking, automatic clock-out, and geofence monitoring even when the app is closed or not in use.',
                         style: TextStyle(
                           fontSize: 14,
                           color: Colors.white,
@@ -88,7 +88,7 @@ class ProminentDisclosureDialog extends StatelessWidget {
                         'Monitor your proximity to work sites even when the app is closed',
                       ),
                       _buildBulletPoint(
-                        'Ensure accurate attendance tracking throughout your work day',
+                        'Ensure accurate attendance tracking even when the app is not in use',
                       ),
                       const SizedBox(height: 16),
                       const Text(

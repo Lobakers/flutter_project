@@ -2,10 +2,34 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-<key>NSLocationWhenInUseUsageDescription</key>
-<string>This app needs location access to track your clock-in location</string>
-<key>NSLocationAlwaysUsageDescription</key>
-<string>This app needs location access to track your clock-in location</string>
+	<!-- Location Permissions -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>BeeWhere needs access to your location to track your clock-in position and verify you are at the correct work site during attendance recording.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>BeeWhere collects location data to enable attendance tracking, automatic clock-out, and geofence monitoring even when the app is closed or not in use. This ensures you are automatically clocked out when you leave your work location.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>BeeWhere collects location data to enable attendance tracking, automatic clock-out, and geofence monitoring even when the app is closed or not in use. This ensures you are automatically clocked out when you leave your work location.</string>
+	
+	<!-- Camera and Photo Library Permissions -->
+	<key>NSCameraUsageDescription</key>
+	<string>BeeWhere needs access to your camera to allow you to take photos for support requests and documentation.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>BeeWhere needs access to your photo library to allow you to select images for support requests and documentation.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>BeeWhere needs permission to save photos to your photo library for record keeping.</string>
+	
+	<!-- Notification Permission -->
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>BeeWhere sends you notifications for automatic clock-out events and important attendance updates.</string>
+	
+	<!-- Background Modes -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

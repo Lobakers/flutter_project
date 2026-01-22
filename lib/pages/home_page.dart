@@ -544,21 +544,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return false;
     }
 
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        _showSnackBar('Location permissions denied');
-        return false;
-      }
-    }
+    // ✨ Use the standardized permission service which includes prominent disclosure
+    final granted = await LocationPermissionService.requestLocationPermissions(
+      context,
+    );
 
-    if (permission == LocationPermission.deniedForever) {
-      _showSnackBar(
-        'Location permissions permanently denied. Please enable in settings.',
-      );
+    if (!granted) {
+      // If not granted, we might want to show a specific message or dialog
+      // but requestLocationPermissions already handles the flow.
       return false;
     }
+
     return true;
   }
 
