@@ -1,16 +1,18 @@
 import 'package:beewhere/pages/history_page.dart';
-import 'package:beewhere/pages/home_page.dart';
+import 'package:beewhere/pages/main_shell.dart';
 import 'package:beewhere/pages/login_page.dart';
 import 'package:beewhere/pages/profile_page.dart';
 import 'package:beewhere/pages/report_page.dart';
 import 'package:beewhere/pages/support_page.dart';
-import 'package:beewhere/providers/attendance_provider.dart';
+import 'package:beewhere/pages/splash_screen.dart';
 import 'package:beewhere/providers/auth_provider.dart';
-import 'package:beewhere/services/logger_service.dart';
+import 'package:beewhere/providers/attendance_provider.dart';
+import 'package:beewhere/providers/clock_provider.dart';
+import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/services/pending_sync_service.dart';
-import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/services/sync_service.dart';
+import 'package:beewhere/services/logger_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -32,6 +34,8 @@ void main() async {
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => AttendanceProvider()),
+        ChangeNotifierProvider(create: (_) => ClockProvider()),
+        ChangeNotifierProvider(create: (_) => ConnectivityService()),
       ],
       child: const MyApp(),
     ),
@@ -44,92 +48,18 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'beeWhere',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-      ),
+      title: 'BeeWhere',
       debugShowCheckedModeBanner: false,
+      theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
       home: const SplashScreen(), // Start with splash screen
       routes: {
         '/login': (context) => const LoginPage(),
-        '/home': (context) => const HomePage(),
+        '/home': (context) => const MainShell(),
         '/history': (context) => const HistoryPage(),
         '/profile': (context) => const ProfilePage(),
         '/report': (context) => const ReportPage(),
         '/support': (context) => const SupportPage(),
       },
-    );
-  }
-}
-
-/// Splash screen that checks for stored credentials
-class SplashScreen extends StatefulWidget {
-  const SplashScreen({super.key});
-
-  @override
-  State<SplashScreen> createState() => _SplashScreenState();
-}
-
-class _SplashScreenState extends State<SplashScreen> {
-  @override
-  void initState() {
-    super.initState();
-    _checkAuthentication();
-  }
-
-  Future<void> _checkAuthentication() async {
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-
-    // Try to load stored credentials
-    final hasStoredAuth = await authProvider.loadStoredAuth();
-
-    // Wait a bit for splash screen visibility
-    await Future.delayed(const Duration(seconds: 1));
-
-    if (!mounted) return;
-
-    // Navigate based on authentication status
-    if (hasStoredAuth) {
-      // User has valid stored credentials, go to home
-      Navigator.pushReplacementNamed(context, '/home');
-    } else {
-      // No stored credentials, go to login
-      Navigator.pushReplacementNamed(context, '/login');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          image: DecorationImage(
-            image: AssetImage('assets/images/background_login.png'),
-            fit: BoxFit.cover,
-          ),
-        ),
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Image.asset('assets/images/beeWhere.png', width: 150),
-              const SizedBox(height: 30),
-              const CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                'Loading...',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

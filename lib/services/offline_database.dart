@@ -216,15 +216,19 @@ class OfflineDatabase {
   /// Save latest clock status
   static Future<void> saveClockStatus(Map<String, dynamic> status) async {
     if (_database == null) {
-      debugPrint('⚠️ OfflineDatabase not initialized, cannot save clock status');
+      debugPrint(
+        '⚠️ OfflineDatabase not initialized, cannot save clock status',
+      );
       return;
     }
 
     try {
       final isClockedIn = status['isClockedIn'] == true ? 1 : 0;
-      
-      debugPrint('💾 Saving clock status to offline DB: isClockedIn=$isClockedIn, clockLogGuid=${status['clockLogGuid']}');
-      
+
+      debugPrint(
+        '💾 Saving clock status to offline DB: isClockedIn=$isClockedIn, clockLogGuid=${status['clockLogGuid']}',
+      );
+
       await _database!.insert('clock_status', {
         'id': 1,
         'is_clocked_in': isClockedIn,
@@ -238,7 +242,7 @@ class OfflineDatabase {
         'activity_name': status['activityName'],
         'updated_at': DateTime.now().toIso8601String(),
       }, conflictAlgorithm: ConflictAlgorithm.replace);
-      
+
       debugPrint('✅ Clock status saved successfully to offline DB');
     } catch (e) {
       debugPrint('❌ Failed to save clock status: $e');
@@ -266,9 +270,11 @@ class OfflineDatabase {
 
       final row = results.first;
       final isClockedIn = row['is_clocked_in'] == 1;
-      
-      debugPrint('📱 Reading clock status from cache: isClockedIn=$isClockedIn, clockLogGuid=${row['clock_log_guid']}');
-      
+
+      debugPrint(
+        '📱 Reading clock status from cache: isClockedIn=$isClockedIn, clockLogGuid=${row['clock_log_guid']}',
+      );
+
       return {
         'success': true,
         'isClockedIn': isClockedIn,

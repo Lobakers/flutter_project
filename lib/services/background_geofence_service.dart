@@ -12,6 +12,7 @@ import 'package:beewhere/services/offline_database.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 /// Background geofence service using foreground task
@@ -101,7 +102,17 @@ class BackgroundGeofenceService {
 
   /// Stop background tracking
   static Future<void> stopTracking() async {
-    if (!_isRunning) return;
+    // ✨ FIX: Even if _isRunning is false, check if the service is actually running
+    // This handles the case where the app was killed and restarted
+    final isServiceRunning = await FlutterForegroundTask.isRunningService;
+
+    if (!_isRunning && !isServiceRunning) {
+      LoggerService.debug(
+        'Background tracking stop requested but service not running',
+        tag: 'BackgroundGeofence',
+      );
+      return;
+    }
 
     await FlutterForegroundTask.stopService();
     await StorageService.clearClockInState();
@@ -121,20 +132,25 @@ class BackgroundGeofenceService {
 /// This runs every 15 seconds in the background
 @pragma('vm:entry-point')
 void startCallback() {
+  // ✨ Ensure Flutter bindings are initialized for isolate
+  WidgetsFlutterBinding.ensureInitialized();
+
   // ✨ Initialize OfflineDatabase in background isolate
-  OfflineDatabase.init().then((_) {
-    LoggerService.info(
-      'OfflineDatabase initialized in background isolate',
-      tag: 'BackgroundGeofence',
-    );
-  }).catchError((e) {
-    LoggerService.error(
-      'Failed to initialize OfflineDatabase in background isolate',
-      tag: 'BackgroundGeofence',
-      error: e,
-    );
-  });
-  
+  OfflineDatabase.init()
+      .then((_) {
+        LoggerService.info(
+          'OfflineDatabase initialized in background isolate',
+          tag: 'BackgroundGeofence',
+        );
+      })
+      .catchError((e) {
+        LoggerService.error(
+          'Failed to initialize OfflineDatabase in background isolate',
+          tag: 'BackgroundGeofence',
+          error: e,
+        );
+      });
+
   FlutterForegroundTask.setTaskHandler(GeofenceTaskHandler());
 }
 
@@ -164,7 +180,9 @@ class GeofenceTaskHandler extends TaskHandler {
     try {
       // ✨ Check if app is in foreground - if so, skip background check
       // The foreground service (AutoClockOutService) will handle it
-      final appInForeground = await FlutterForegroundTask.getData<bool>(key: 'appInForeground');
+      final appInForeground = await FlutterForegroundTask.getData<bool>(
+        key: 'appInForeground',
+      );
       if (appInForeground == true) {
         LoggerService.debug(
           'App is in foreground, skipping background check (foreground service handles it)',
@@ -310,7 +328,9 @@ class GeofenceTaskHandler extends TaskHandler {
       );
 
       // ✨ DOUBLE-CHECK: Is app in foreground? If so, abort (foreground service handles it)
-      final appInForeground = await FlutterForegroundTask.getData<bool>(key: 'appInForeground');
+      final appInForeground = await FlutterForegroundTask.getData<bool>(
+        key: 'appInForeground',
+      );
       if (appInForeground == true) {
         LoggerService.warning(
           'App is in foreground during clock-out attempt, aborting (foreground service will handle it)',
@@ -419,19 +439,19 @@ class GeofenceTaskHandler extends TaskHandler {
             '✅ PendingSyncService initialized in background isolate',
             tag: 'GeofenceTaskHandler',
           );
-          
+
           await PendingSyncService.addPendingAction(
             actionType: 'clock_out',
             payload: clockOutPayload,
           );
-          
+
           // Verify it was added
           final pendingCount = await PendingSyncService.getPendingCount();
           LoggerService.info(
             '✅ Clock-out action queued. Total pending actions: $pendingCount',
             tag: 'GeofenceTaskHandler',
           );
-          
+
           // List all pending actions for debugging
           final allActions = await PendingSyncService.getPendingActions();
           LoggerService.debug(
@@ -461,7 +481,7 @@ class GeofenceTaskHandler extends TaskHandler {
         try {
           // Ensure OfflineDatabase is initialized before updating
           await OfflineDatabase.init();
-          
+
           await OfflineDatabase.saveClockStatus({
             'isClockedIn': false,
             'clockLogGuid': null,
@@ -473,7 +493,7 @@ class GeofenceTaskHandler extends TaskHandler {
             'contractId': null,
             'activityName': null,
           });
-          
+
           LoggerService.info(
             '✅ Updated OfflineDatabase to clocked-out status (OFFLINE)',
             tag: 'GeofenceTaskHandler',
@@ -526,6 +546,13 @@ class GeofenceTaskHandler extends TaskHandler {
           location: location,
           reason: reason,
         );
+
+        // ✨ Save flag for UI dialog when app resumes
+        await StorageService.saveAutoClockOutPending(
+          distance: distance,
+          reason: reason,
+          timestamp: DateTime.now(),
+        );
       } else {
         LoggerService.error(
           'Auto clock-out API failed: ${response.statusCode}',
@@ -541,7 +568,7 @@ class GeofenceTaskHandler extends TaskHandler {
       try {
         // Ensure OfflineDatabase is initialized before updating
         await OfflineDatabase.init();
-        
+
         await OfflineDatabase.saveClockStatus({
           'isClockedIn': false,
           'clockLogGuid': null,
@@ -553,7 +580,7 @@ class GeofenceTaskHandler extends TaskHandler {
           'contractId': null,
           'activityName': null,
         });
-        
+
         LoggerService.info(
           '✅ Updated offline database cache to clocked-out status (ONLINE)',
           tag: 'GeofenceTaskHandler',
@@ -583,7 +610,7 @@ class GeofenceTaskHandler extends TaskHandler {
         error: e,
         stackTrace: stackTrace,
       );
-      
+
       // Ensure service stops even on error
       try {
         await FlutterForegroundTask.stopService();

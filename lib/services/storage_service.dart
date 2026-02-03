@@ -10,6 +10,7 @@ class StorageService {
   static const String _keyToken = 'auth_token';
   static const String _keyUserInfo = 'user_info';
   static const String _keyClockInState = 'clock_in_state';
+  static const String _keyAutoClockOutPending = 'auto_clock_out_pending';
 
   /// Save JWT token securely
   static Future<void> saveToken(String token) async {
@@ -106,5 +107,35 @@ class StorageService {
   static Future<bool> hasStoredCredentials() async {
     final token = await getToken();
     return token != null && token.isNotEmpty;
+  }
+
+  /// Save pending auto clock-out notification
+  static Future<void> saveAutoClockOutPending({
+    required double distance,
+    String? reason,
+    required DateTime timestamp,
+  }) async {
+    final data = {
+      'distance': distance,
+      'reason': reason,
+      'timestamp': timestamp.toIso8601String(),
+    };
+    await _storage.write(key: _keyAutoClockOutPending, value: jsonEncode(data));
+  }
+
+  /// Get pending auto clock-out notification
+  static Future<Map<String, dynamic>?> getAutoClockOutPending() async {
+    final jsonString = await _storage.read(key: _keyAutoClockOutPending);
+    if (jsonString == null) return null;
+    try {
+      return jsonDecode(jsonString) as Map<String, dynamic>;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Clear pending auto clock-out notification
+  static Future<void> clearAutoClockOutPending() async {
+    await _storage.delete(key: _keyAutoClockOutPending);
   }
 }

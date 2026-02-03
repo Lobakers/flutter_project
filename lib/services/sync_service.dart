@@ -16,7 +16,7 @@ class SyncService {
   static int _failedCount = 0;
   // Production API (currently active)
   static const String _baseUrl = 'https://amscore.beesuite.app';
-  
+
   // Development API (commented out for testing later)
   // static const String _baseUrl = 'https://devamscore.beesuite.app';
 
@@ -75,6 +75,23 @@ class SyncService {
         return {'success': true, 'message': 'No pending actions to sync'};
       }
 
+      // ✨ Sort actions: timestamps ASC, but prioritize clock_in over clock_out if same time
+      pendingActions.sort((a, b) {
+        final timeA = DateTime.parse(a['created_at']);
+        final timeB = DateTime.parse(b['created_at']);
+        final diff = timeA.compareTo(timeB);
+
+        if (diff != 0) return diff;
+
+        final typeA = a['action_type'];
+        final typeB = b['action_type'];
+
+        if (typeA == 'clock_in' && typeB == 'clock_out') return -1;
+        if (typeA == 'clock_out' && typeB == 'clock_in') return 1;
+
+        return 0;
+      });
+
       // Track last clock-in timestamp to prevent timestamp collisions
       int? lastClockInTime;
 
@@ -118,7 +135,8 @@ class SyncService {
                 // This ensures background service uses the real GUID if it triggers auto clock-out
                 try {
                   final clockInState = await StorageService.getClockInState();
-                  if (clockInState != null && clockInState['isClockedIn'] == true) {
+                  if (clockInState != null &&
+                      clockInState['isClockedIn'] == true) {
                     // Check if the stored GUID is a temp GUID
                     final storedGuid = clockInState['clockRefGuid'] as String?;
                     if (storedGuid != null && storedGuid.startsWith('temp_')) {
@@ -126,14 +144,15 @@ class SyncService {
                         '🔄 Updating StorageService with real GUID: $realGuid (was: $storedGuid)',
                         tag: 'SyncService',
                       );
-                      
+
                       await StorageService.saveClockInState(
                         isClockedIn: true,
                         clockRefGuid: realGuid, // ✨ Update with real GUID
                         targetLat: clockInState['targetLat'] as double?,
                         targetLng: clockInState['targetLng'] as double?,
                         targetAddress: clockInState['targetAddress'] as String?,
-                        radiusInMeters: clockInState['radiusInMeters'] as double?,
+                        radiusInMeters:
+                            clockInState['radiusInMeters'] as double?,
                         jobType: clockInState['jobType'] as String?,
                         clientId: clockInState['clientId'] as String?,
                         projectId: clockInState['projectId'] as String?,
@@ -148,23 +167,25 @@ class SyncService {
                     error: e,
                   );
                 }
-                
+
                 // ✨ ALSO UPDATE OfflineDatabase cache with real GUID
                 // This ensures UI shows correct GUID after sync
                 try {
                   final cachedStatus = await OfflineDatabase.getClockStatus();
-                  if (cachedStatus != null && cachedStatus['isClockedIn'] == true) {
+                  if (cachedStatus != null &&
+                      cachedStatus['isClockedIn'] == true) {
                     final cachedGuid = cachedStatus['clockLogGuid'] as String?;
                     if (cachedGuid != null && cachedGuid.startsWith('temp_')) {
                       LoggerService.info(
                         '🔄 Updating OfflineDatabase with real GUID: $realGuid (was: $cachedGuid)',
                         tag: 'SyncService',
                       );
-                      
+
                       await OfflineDatabase.saveClockStatus({
                         'isClockedIn': true,
                         'clockLogGuid': realGuid, // ✨ Update with real GUID
-                        'clockTime': result['clockTime'], // Use real clock time from API
+                        'clockTime':
+                            result['clockTime'], // Use real clock time from API
                         'jobType': cachedStatus['jobType'],
                         'address': cachedStatus['address'],
                         'clientId': cachedStatus['clientId'],
@@ -181,13 +202,13 @@ class SyncService {
                     error: e,
                   );
                 }
-                
-                // ✨ FIX: Add small delay to ensure clock-in is fully committed to database
+
+                // ✨ FIX: Add delay to ensure clock-in is fully committed to database
                 // before clock-out starts. This prevents race condition where clock-out
-                // gets inserted before clock-in due to parallel API calls.
-                await Future.delayed(const Duration(milliseconds: 500));
+                // gets inserted before clock-in.
+                await Future.delayed(const Duration(seconds: 2));
                 LoggerService.debug(
-                  '⏱️ Waited 500ms after clock-in to ensure database commit',
+                  '⏱️ Waited 2s after clock-in to ensure database commit',
                   tag: 'SyncService',
                 );
               }
@@ -378,9 +399,9 @@ class SyncService {
       } else {
         // ✨ Check if this is an orphaned clock-out (referencing non-existent GUID)
         final responseBody = response.body.toLowerCase();
-        if (response.statusCode == 400 && 
-            (responseBody.contains('fail to create resource') || 
-             responseBody.contains('resource'))) {
+        if (response.statusCode == 400 &&
+            (responseBody.contains('fail to create resource') ||
+                responseBody.contains('resource'))) {
           LoggerService.warning(
             '⚠️ Clock-out references non-existent GUID (orphaned record). This will be removed from queue.',
             tag: 'SyncService',
@@ -388,7 +409,7 @@ class SyncService {
           // Return true to remove it from queue (it's an orphaned record that can't be synced)
           return true;
         }
-        
+
         LoggerService.error(
           'Clock out sync failed: ${response.statusCode} - ${response.body}',
           tag: 'SyncService',

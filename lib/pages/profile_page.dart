@@ -7,7 +7,6 @@ import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
-import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:beewhere/widgets/drawer.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -127,19 +126,6 @@ class _ProfilePageState extends State<ProfilePage> {
     final userId = auth.userInfo?['userId'] ?? 'N/A';
 
     return Scaffold(
-      bottomNavigationBar: AppBottomNav(
-        currentIndex: 3, // Profile is index 3
-        onTap: (index) {
-          if (index == 0) {
-            Navigator.pushReplacementNamed(context, '/home');
-          } else if (index == 1) {
-            Navigator.pushReplacementNamed(context, '/history');
-          } else if (index == 2) {
-            Navigator.pushReplacementNamed(context, '/report');
-          }
-          // If index == 3 (Profile), do nothing as we're already here
-        },
-      ),
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(180),
         child: Container(

@@ -1,32 +1,29 @@
 import 'dart:async';
-import 'package:beewhere/controller/client_detail_api.dart';
-import 'package:beewhere/controller/project_api.dart';
-import 'package:beewhere/controller/contract_api.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
+import 'package:beewhere/config/geofence_config.dart';
 import 'package:beewhere/controller/attendance_profile_api.dart';
 import 'package:beewhere/controller/clock_api.dart';
 import 'package:beewhere/controller/geofence_helper.dart';
-import 'package:beewhere/controller/auto_clockout_service.dart';
-import 'package:beewhere/services/offline_database.dart';
-import 'package:beewhere/services/background_geofence_service.dart';
-import 'package:beewhere/services/notification_service.dart';
-import 'package:beewhere/services/location_permission_service.dart';
-import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
-import 'package:beewhere/theme/color_theme.dart';
-import 'package:beewhere/widgets/bottom_nav.dart';
+import 'package:beewhere/providers/auth_provider.dart';
+import 'package:beewhere/providers/clock_provider.dart';
+import 'package:beewhere/services/background_geofence_service.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:beewhere/services/location_permission_service.dart';
+import 'package:beewhere/services/notification_service.dart';
+import 'package:beewhere/services/offline_database.dart';
+import 'package:beewhere/services/storage_service.dart';
+import 'package:beewhere/pages/history_page.dart';
+import 'package:beewhere/pages/main_shell.dart';
 import 'package:beewhere/widgets/device_info_helper.dart';
 import 'package:beewhere/widgets/drawer.dart';
-import 'package:flutter/material.dart';
+import 'package:beewhere/widgets/location_map_widget.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:slide_to_act/slide_to_act.dart';
-import 'package:beewhere/widgets/location_map_widget.dart';
-import 'package:beewhere/config/geofence_config.dart';
-import 'package:beewhere/services/connectivity_service.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -49,37 +46,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String _currentDay = '';
   Timer? _timer;
 
-  // Clock state
-  bool _isClockedIn = false;
-  String _clockStatus = "You Haven't Clocked In Yet";
-  String? _clockRefGuid;
-  String? _clockInTime;
-
-  // Form state
-  String _selectedJobType = '';
-  String? _selectedClient;
-  String? _selectedProject;
-  String? _selectedContract;
-  String _activityName = '';
-  final _activityController = TextEditingController();
-
-  // Dropdown data
-  List<dynamic> _clients = [];
-  List<dynamic> _projects = [];
-  List<dynamic> _contracts = [];
-  bool _loadingDropdowns = false;
-
-  // Field visibility
+  // ✨ Restored local state for form input management
+  final TextEditingController _activityController = TextEditingController();
   Map<String, bool> _fieldVisibility = {};
 
-  // Navigation state
-  int _currentIndex = 0;
-
-  AutoClockOutService? _autoClockOutService;
-
-  // Connectivity state
-  bool _isOnline = true;
-  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+  ClockProvider get clockProvider =>
+      Provider.of<ClockProvider>(context, listen: false);
 
   double? _currentUserLat;
   double? _currentUserLng;
@@ -93,34 +65,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // ✨ Initialize notification service
     NotificationService.init();
 
-    // ✨ FIX: Initialize here safely
-    _autoClockOutService = AutoClockOutService(
-      checkInterval: GeofenceConfig.autoClockOutCheckInterval,
-      radiusInMeters: GeofenceConfig.autoClockOutRadius,
-      // radiusInMeters: 10.0, //testing purpose
-      onLeaveGeofence: _onUserLeftGeofence,
-    );
-
-    // ✨ Listen to auto clock-out status stream
-    _autoClockOutService?.statusStream.listen((status) {
-      if (mounted) {
-        setState(() {
-          _currentUserLat = status['userLat'];
-          _currentUserLng = status['userLng'];
-          _lastDistance = status['distance'];
-          _lastViolationCount = status['violationCount'];
-        });
-      }
-    });
-
     _initializeData();
     _startTimers();
     _startLocationAutoRefresh();
-    _initConnectivityListener();
 
-    // ✨ Request background location permission on startup
-    // Use addPostFrameCallback to ensure context is valid for showing dialogs
+    // ✨ Initialize ClockProvider and background monitoring
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      final clockProvider = Provider.of<ClockProvider>(context, listen: false);
+      clockProvider.initialize(context);
+
+      // Listen for auto clock-out events
+      clockProvider.autoClockOutEvents.listen((distance) {
+        if (mounted) {
+          _onUserLeftGeofence(distance);
+        }
+      });
+
       _initLocationAndClock();
     });
 
@@ -147,6 +107,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       // Refresh clock status from server when app resumes
       _checkExistingClock();
+
+      // ✨ Check if an auto clock-out happened in background
+      _checkPendingAutoClockOut();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       debugPrint('📱 App paused/inactive, background service will take over');
@@ -164,29 +127,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // ✨ Initialize connectivity listener
-  void _initConnectivityListener() {
-    // Set initial state
-    _isOnline = ConnectivityService.isOnline;
-
-    // Listen to connectivity changes
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
-      ConnectivityResult result,
-    ) {
-      if (mounted) {
-        setState(() {
-          _isOnline = result != ConnectivityResult.none;
-        });
-      }
-    });
-  }
 
   @override
   void dispose() {
     _timer?.cancel();
     _locationAutoRefreshTimer?.cancel();
     _activityController.dispose();
-    _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
-    _connectivitySubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this); // ✨ Remove lifecycle observer
     super.dispose();
   }
@@ -206,11 +152,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // ✨ CALLBACK: When user leaves geofence area or location is disabled
   Future<void> _onUserLeftGeofence(double distance) async {
     debugPrint(
-      '🔔 _onUserLeftGeofence called with distance: $distance, isClockedIn: $_isClockedIn, isAutoClockingOut: $_isAutoClockingOut',
+      '🔔 _onUserLeftGeofence called with distance: $distance, isClockedIn: ${clockProvider.isClockedIn}, isAutoClockingOut: $_isAutoClockingOut',
     );
 
     // Check if we're still clocked in (prevent duplicate clock-out)
-    if (!_isClockedIn) {
+    if (!clockProvider.isClockedIn) {
       debugPrint('⚠️ Already clocked out, ignoring auto clock-out trigger');
       return;
     }
@@ -231,11 +177,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       debugPrint(
         '🛑 Stopping background service to prevent duplicate auto clock-out',
       );
-      try {
-        await BackgroundGeofenceService.stopTracking();
-      } catch (e) {
-        debugPrint('⚠️ Error stopping background service: $e');
-      }
+      await BackgroundGeofenceService.stopTracking();
 
       // Special case: distance = -1 means location service was disabled
       if (distance < 0) {
@@ -266,6 +208,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } finally {
       // Reset flag after clock-out completes
       _isAutoClockingOut = false;
+    }
+  }
+
+  Future<void> _checkPendingAutoClockOut() async {
+    final pending = await StorageService.getAutoClockOutPending();
+    if (pending != null && mounted) {
+      final distance = pending['distance'] as double? ?? 0.0;
+      final reason = pending['reason'] as String?;
+
+      // Clear the flag so it doesn't show again
+      await StorageService.clearAutoClockOutPending();
+
+      // Show the dialog
+      if (reason == 'location_disabled') {
+        _showLocationDisabledDialog();
+      } else {
+        _showAutoClockOutDialog(distance);
+      }
     }
   }
 
@@ -361,20 +321,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (cachedClock != null && mounted) {
         debugPrint('📱 Loaded clock status from cache');
         setState(() {
-          _isClockedIn = cachedClock['isClockedIn'] == true;
-          if (_isClockedIn) {
-            _clockRefGuid = cachedClock['clockLogGuid'];
-            _clockInTime = cachedClock['clockTime'];
-            _clockStatus = _formatClockTime(_clockInTime);
-            _selectedJobType = _capitalizeFirst(cachedClock['jobType'] ?? '');
-            _selectedClient = cachedClock['clientId'];
-            _selectedProject = cachedClock['projectId'];
-            _selectedContract = cachedClock['contractId'];
-            _activityName = cachedClock['activityName'] ?? '';
-            _activityController.text = _activityName;
+          clockProvider.isClockedIn = cachedClock['isClockedIn'] == true;
+          if (clockProvider.isClockedIn) {
+            clockProvider.clockRefGuid = cachedClock['clockLogGuid'];
+            clockProvider.clockInTime = cachedClock['clockTime'];
+            clockProvider.clockStatus = _formatClockTime(
+              clockProvider.clockInTime,
+            );
+            clockProvider.selectedJobType = _capitalizeFirst(
+              cachedClock['jobType'] ?? '',
+            );
+            clockProvider.selectedClient = cachedClock['clientId'];
+            clockProvider.selectedProject = cachedClock['projectId'];
+            clockProvider.selectedContract = cachedClock['contractId'];
+            clockProvider.activityName = cachedClock['activityName'] ?? '';
+            _activityController.text = clockProvider.activityName;
 
             // Trigger UI updates
-            _updateFieldVisibility(_selectedJobType);
+            _updateFieldVisibility(clockProvider.selectedJobType);
           }
         });
       }
@@ -390,12 +354,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       if (mounted) {
         setState(() {
-          if (cachedClients.isNotEmpty) _clients = cachedClients;
-          if (cachedProjects.isNotEmpty) _projects = cachedProjects;
-          if (cachedContracts.isNotEmpty) _contracts = cachedContracts;
+          if (cachedClients.isNotEmpty) clockProvider.clients = cachedClients;
+          if (cachedProjects.isNotEmpty)
+            clockProvider.projects = cachedProjects;
+          if (cachedContracts.isNotEmpty)
+            clockProvider.contracts = cachedContracts;
         });
         debugPrint(
-          '📱 Loaded dropdowns from cache: ${_clients.length} clients',
+          '📱 Loaded dropdowns from cache: ${clockProvider.clients.length} clients',
         );
       }
     } catch (e) {
@@ -409,7 +375,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     await DeviceInfoHelper.init();
     await _loadAttendanceProfile();
-    await _loadDropdownData();
+    // Load dropdown data via provider
+    await clockProvider.loadDropdownData(context);
     // Logic moved to _initLocationAndClock to allow UI to build first
   }
 
@@ -453,13 +420,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _currentDay = DateFormat('EEEE').format(now);
 
         // ✨ Update live duration if clocked in
-        if (_isClockedIn && _clockInTime != null) {
-          final clockInDate = _parseClockInTime(_clockInTime);
+        if (clockProvider.isClockedIn && clockProvider.clockInTime != null) {
+          final clockInDate = _parseClockInTime(clockProvider.clockInTime);
           if (clockInDate != null) {
             final difference = now.difference(clockInDate);
             final hours = difference.inHours;
             final minutes = difference.inMinutes % 60;
-            _clockStatus = '$hours hours $minutes minute';
+            clockProvider.clockStatus = '$hours hours $minutes minute';
           }
         }
       });
@@ -476,59 +443,50 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _loadDropdownData() async {
-    if (!mounted) return;
-    setState(() => _loadingDropdowns = true);
-    try {
-      _clients = await ClientDetailApi.getClients(context);
-      _projects = await ProjectApi.getProjects(context);
-      _contracts = await ContractApi.getContracts(context);
-    } catch (e) {
-      debugPrint('Error loading dropdowns: $e');
-    }
-    if (mounted) setState(() => _loadingDropdowns = false);
-  }
-
   Future<void> _checkExistingClock() async {
     final result = await ClockApi.getLatestClock(context);
     if (!mounted) return;
 
     if (result['success'] && result['isClockedIn'] == true) {
       setState(() {
-        _isClockedIn = true;
-        _clockRefGuid = result['clockLogGuid'];
-        _clockStatus = _formatClockTime(result['clockTime']); // ✨ Format time
-        _clockInTime =
+        clockProvider.isClockedIn = true;
+        clockProvider.clockRefGuid = result['clockLogGuid'];
+        clockProvider.clockStatus = _formatClockTime(
+          result['clockTime'],
+        ); // ✨ Format time
+        clockProvider.clockInTime =
             result['clockTime']; // Store clock-in time for clock-out dialog
-        _selectedJobType = _capitalizeFirst(result['jobType'] ?? '');
-        _selectedClient = result['clientId'];
-        _selectedProject = result['projectId'];
-        _selectedContract = result['contractId'];
-        _activityName = result['activityName'] ?? '';
-        _activityController.text = _activityName;
+        clockProvider.selectedJobType = _capitalizeFirst(
+          result['jobType'] ?? '',
+        );
+        clockProvider.selectedClient = result['clientId'];
+        clockProvider.selectedProject = result['projectId'];
+        clockProvider.selectedContract = result['contractId'];
+        clockProvider.activityName = result['activityName'] ?? '';
+        _activityController.text = clockProvider.activityName;
       });
-      _updateFieldVisibility(_selectedJobType);
+      _updateFieldVisibility(clockProvider.selectedJobType);
 
       // ✨ If already clocked in, restart geofence monitoring
-      await _startGeofenceMonitoringForClient(_selectedClient);
+      await _startGeofenceMonitoringForClient(clockProvider.selectedClient);
     } else if (result['success'] && result['isClockedIn'] == false) {
       // ✨ FIX: If cache said we were clocked in, but server says we are NOT, reset UI
-      if (_isClockedIn) {
+      if (clockProvider.isClockedIn) {
         debugPrint(
           '⚠️ Cache mismatch: Server says NOT clocked in. Resetting UI.',
         );
         setState(() {
-          _isClockedIn = false;
-          _clockRefGuid = null;
-          _clockStatus = "You Haven't Clocked In Yet";
-          _selectedJobType = '';
-          _selectedClient = null;
-          _selectedProject = null;
-          _selectedContract = null;
+          clockProvider.isClockedIn = false;
+          clockProvider.clockRefGuid = null;
+          clockProvider.clockStatus = "You Haven't Clocked In Yet";
+          clockProvider.selectedJobType = '';
+          clockProvider.selectedClient = null;
+          clockProvider.selectedProject = null;
+          clockProvider.selectedContract = null;
           _activityController.clear();
           _fieldVisibility = {};
         });
-        _autoClockOutService?.stopMonitoring();
+        clockProvider.autoClockOutService?.stopMonitoring();
       }
     }
   }
@@ -594,101 +552,38 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // ===================== GEOFENCE =====================
 
-  /// Filter clients to show only those within 250m of current location
-  // List<dynamic> _getNearbyClients() {
-  //   if (_latitude == null || _longitude == null) {
-  //     debugPrint(
-  //       '⚠️ No location available, showing all ${_clients.length} clients',
-  //     );
-  //     return _clients; // Return all if no location
-  //   }
-
-  //   final nearbyClients = _clients.where((client) {
-  //     final locationData = client['LOCATION_DATA'] as List<dynamic>?;
-  //     if (locationData == null || locationData.isEmpty) {
-  //       return false; // Exclude clients without location
-  //     }
-
-  //     final location = locationData[0];
-  //     final clientLat = (location['LATITUDE'] as num?)?.toDouble();
-  //     final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
-
-  //     if (clientLat == null || clientLng == null) {
-  //       return false; // Exclude clients with invalid coordinates
-  //     }
-
-  //     // Calculate distance
-  //     final distance = GeofenceHelper.calculateDistance(
-  //       _latitude!,
-  //       _longitude!,
-  //       clientLat,
-  //       clientLng,
-  //     );
-
-  //     final isNearby = distance <= 1000.0;
-  //     if (isNearby) {
-  //       // debugPrint(
-  //       //   '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',
-  //       // );
-  //     }
-
-  //     return isNearby; // Only include clients within 250m
-  //   }).toList();
-
-  //   // debugPrint(
-  //   //   '📍 Found ${nearbyClients.length} clients within 250m (out of ${_clients.length} total)',
-  //   // );
-
-  //   // Deduplicate by CLIENT_GUID to prevent dropdown errors
-  //   final seenGuids = <String>{};
-  //   final uniqueClients = nearbyClients.where((client) {
-  //     final guid = client['CLIENT_GUID'] as String?;
-  //     if (guid == null || seenGuids.contains(guid)) {
-  //       return false;
-  //     }
-  //     seenGuids.add(guid);
-  //     return true;
-  //   }).toList();
-
-  //   if (uniqueClients.length < nearbyClients.length) {
-  //     debugPrint(
-  //       '⚠️ Removed ${nearbyClients.length - uniqueClients.length} duplicate clients',
-  //     );
-  //   }
-
-  //   return uniqueClients;
-  // }
-
   /// Filter clients based on geofence_filter setting for the selected job type
   List<dynamic> _getNearbyClients() {
     // ✨ NEW: Check if geofence filtering is enabled for current job type
     final attendance = Provider.of<AttendanceProvider>(context, listen: false);
-    final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+    final jobTypeConfig = attendance.getFieldsForJobType(
+      clockProvider.selectedJobType,
+    );
     final shouldFilterByGeofence = jobTypeConfig['geofence_filter'] ?? false;
 
     // If geofence filtering is disabled, return all clients
     if (!shouldFilterByGeofence) {
       // debugPrint(
-      //   '📍 Geofence filter disabled for $_selectedJobType, showing all ${_clients.length} clients',
+      //   '📍 Geofence filter disabled for $clockProvider.selectedJobType, showing all ${clockProvider.clients.length} clients',
       // );
-      return _clients;
+      return clockProvider.clients;
     }
 
     // If no location available, return all clients with a warning
     if (_latitude == null || _longitude == null) {
       // debugPrint(
-      //   '⚠️ No location available, showing all ${_clients.length} clients',
+      //   '⚠️ No location available, showing all ${clockProvider.clients.length} clients',
       // );
-      return _clients;
+      return clockProvider.clients;
     }
 
     // ✨ Get configured radius for job type
     final configRadius =
-        attendance.getRadiusForJobType(_selectedJobType) ??
+        attendance.getRadiusForJobType(clockProvider.selectedJobType) ??
         GeofenceConfig.clientFilterRadius;
 
     // Filter clients within configured radius
-    final nearbyClients = _clients.where((client) {
+    final nearbyClients = clockProvider.clients.where((client) {
       final locationData = client['LOCATION_DATA'] as List<dynamic>?;
       if (locationData == null || locationData.isEmpty) {
         return false; // Exclude clients without location
@@ -715,7 +610,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }).toList();
 
     // debugPrint(
-    //   '📍 Found ${nearbyClients.length} clients within 1000m (out of ${_clients.length} total)',
+    //   '📍 Found ${nearbyClients.length} clients within 1000m (out of ${clockProvider.clients.length} total)',
     // );
 
     // Deduplicate by CLIENT_GUID to prevent dropdown errors
@@ -800,7 +695,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // ✨ Get configured radius for current job type
     final attendance = Provider.of<AttendanceProvider>(context, listen: false);
     final configRadius =
-        attendance.getRadiusForJobType(_selectedJobType) ??
+        attendance.getRadiusForJobType(clockProvider.selectedJobType) ??
         GeofenceConfig.autoClockOutRadius;
 
     debugPrint('🎯 Starting geofence monitoring');
@@ -809,7 +704,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     debugPrint('   Check interval: 15s');
     debugPrint('   Required violations: 2');
 
-    await _autoClockOutService?.startMonitoring(
+    await clockProvider.autoClockOutService?.startMonitoring(
       targetLat: targetLat,
       targetLng: targetLng,
       targetAddress: targetAddress,
@@ -835,7 +730,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       double? targetLng = _longitude;
       String? targetAddress = _currentAddress;
 
-      if (targetLat == null || targetLng == null || _clockRefGuid == null) {
+      if (targetLat == null ||
+          targetLng == null ||
+          clockProvider.clockRefGuid == null) {
         debugPrint(
           '⚠️ Cannot start background tracking: missing location or clockRefGuid',
         );
@@ -848,7 +745,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         listen: false,
       );
       final configRadius =
-          attendance.getRadiusForJobType(_selectedJobType) ??
+          attendance.getRadiusForJobType(clockProvider.selectedJobType) ??
           GeofenceConfig.autoClockOutRadius;
 
       // Start background tracking
@@ -857,7 +754,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         targetLng: targetLng,
         targetAddress: targetAddress ?? 'Work Location',
         radiusInMeters: configRadius, // ✨ Use dynamic radius
-        clockRefGuid: _clockRefGuid!,
+        clockRefGuid: clockProvider.clockRefGuid!,
       );
 
       debugPrint('✅ Background tracking started');
@@ -870,7 +767,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _handleClockAction() async {
     // Validation 1: Job type required
-    if (_selectedJobType.isEmpty) {
+    if (clockProvider.selectedJobType.isEmpty) {
       _showDialog(
         'Action Required',
         'Please select a job type (Office/Site/Home/Others)',
@@ -879,9 +776,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
 
     // Validation 2: Client required (only for clock in)
-    if (!_isClockedIn &&
+    if (!clockProvider.isClockedIn &&
         _fieldVisibility['client'] == true &&
-        _selectedClient == null) {
+        clockProvider.selectedClient == null) {
       _showDialog('Action Required', 'Please select a client');
       return;
     }
@@ -893,7 +790,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
 
     // Validation 4: Background location permission required (only for clock in)
-    if (!_isClockedIn) {
+    if (!clockProvider.isClockedIn) {
       final hasPermission =
           await LocationPermissionService.hasBackgroundPermission();
       if (!hasPermission) {
@@ -907,7 +804,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     }
 
-    if (_isClockedIn) {
+    if (clockProvider.isClockedIn) {
       await _performClockOut();
     } else {
       await _performClockIn();
@@ -921,14 +818,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final result = await ClockApi.clockIn(
       context: context,
       userGuid: userGuid,
-      jobType: _selectedJobType.toLowerCase(),
+      jobType: clockProvider.selectedJobType.toLowerCase(),
       latitude: _latitude,
       longitude: _longitude,
       address: _currentAddress,
-      clientId: _selectedClient,
-      projectId: _selectedProject,
-      contractId: _selectedContract,
-      activityName: _activityName,
+      clientId: clockProvider.selectedClient,
+      projectId: clockProvider.selectedProject,
+      contractId: clockProvider.selectedContract,
+      activityName: clockProvider.activityName,
       deviceDescription: DeviceInfoHelper.deviceDescription,
       deviceIp: DeviceInfoHelper.deviceIp,
       deviceId: DeviceInfoHelper.deviceId,
@@ -936,14 +833,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     if (result['success'] && mounted) {
       setState(() {
-        _isClockedIn = true;
-        _clockRefGuid = result['clockLogGuid'];
-        _clockInTime = result['clockTime'];
-        _clockStatus = _formatClockTime(result['clockTime']); // ✨ Format time
+        clockProvider.isClockedIn = true;
+        clockProvider.clockRefGuid = result['clockLogGuid'];
+        clockProvider.clockInTime = result['clockTime'];
+        clockProvider.clockStatus = _formatClockTime(
+          result['clockTime'],
+        ); // ✨ Format time
       });
 
       // ✨ START GEOFENCE MONITORING AFTER CLOCK IN
-      await _startGeofenceMonitoringForClient(_selectedClient);
+      await _startGeofenceMonitoringForClient(clockProvider.selectedClient);
 
       // ✨ REQUEST NOTIFICATION PERMISSION AND START BACKGROUND TRACKING
       await _startBackgroundTracking();
@@ -980,13 +879,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     double? distance,
     String? reason,
   }) async {
-    if (_clockRefGuid == null) {
+    if (clockProvider.clockRefGuid == null) {
       _showDialog('Error', 'No clock in record found');
       return;
     }
 
     // ✨ STOP FOREGROUND AND BACKGROUND MONITORING
-    _autoClockOutService?.stopMonitoring();
+    clockProvider.autoClockOutService?.stopMonitoring();
     try {
       await BackgroundGeofenceService.stopTracking();
     } catch (e) {
@@ -999,15 +898,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final result = await ClockApi.clockOut(
       context: context,
       userGuid: userGuid,
-      jobType: _selectedJobType.toLowerCase(),
+      jobType: clockProvider.selectedJobType.toLowerCase(),
       latitude: _latitude,
       longitude: _longitude,
       address: _currentAddress,
-      clockRefGuid: _clockRefGuid!,
-      clientId: _selectedClient,
-      projectId: _selectedProject,
-      contractId: _selectedContract,
-      activityName: _activityName,
+      clockRefGuid: clockProvider.clockRefGuid!,
+      clientId: clockProvider.selectedClient,
+      projectId: clockProvider.selectedProject,
+      contractId: clockProvider.selectedContract,
+      activityName: clockProvider.activityName,
       deviceDescription: DeviceInfoHelper.deviceDescription,
       deviceIp: DeviceInfoHelper.deviceIp,
       deviceId: DeviceInfoHelper.deviceId,
@@ -1017,7 +916,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (!isAutomatic) {
         _showSuccessDialog(
           'Clock Out Successful',
-          'In: ${_formatClockTime(_clockInTime)}\nOut: ${_formatClockTime(result['clockTime'])}',
+          'In: ${_formatClockTime(clockProvider.clockInTime)}\nOut: ${_formatClockTime(result['clockTime'])}',
         );
       } else {
         // Show persistent notification for auto clock-out
@@ -1029,13 +928,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
 
       setState(() {
-        _isClockedIn = false;
-        _clockRefGuid = null;
-        _clockStatus = "You Haven't Clocked In Yet";
-        _selectedJobType = '';
-        _selectedClient = null;
-        _selectedProject = null;
-        _selectedContract = null;
+        clockProvider.isClockedIn = false;
+        clockProvider.clockRefGuid = null;
+        clockProvider.clockStatus = "You Haven't Clocked In Yet";
+        clockProvider.selectedJobType = '';
+        clockProvider.selectedClient = null;
+        clockProvider.selectedProject = null;
+        clockProvider.selectedContract = null;
         _activityController.clear();
         _fieldVisibility = {};
       });
@@ -1048,13 +947,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             '⚠️ Auto clock-out: Already clocked out on another device, updating UI',
           );
           setState(() {
-            _isClockedIn = false;
-            _clockRefGuid = null;
-            _clockStatus = "You Haven't Clocked In Yet";
-            _selectedJobType = '';
-            _selectedClient = null;
-            _selectedProject = null;
-            _selectedContract = null;
+            clockProvider.isClockedIn = false;
+            clockProvider.clockRefGuid = null;
+            clockProvider.clockStatus = "You Haven't Clocked In Yet";
+            clockProvider.selectedJobType = '';
+            clockProvider.selectedClient = null;
+            clockProvider.selectedProject = null;
+            clockProvider.selectedContract = null;
             _activityController.clear();
             _fieldVisibility = {};
           });
@@ -1076,23 +975,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _onJobTypeSelected(String jobType) {
     setState(() {
-      _selectedJobType = jobType;
+      clockProvider.selectedJobType = jobType;
 
       // ✨ FIX: Clear selected client if it's not in the new filtered list
       // This prevents dropdown errors when switching between job types with different geofence filters
-      if (_selectedClient != null) {
+      if (clockProvider.selectedClient != null) {
         final filteredClients = _getNearbyClients();
         final clientExists = filteredClients.any(
-          (client) => client['CLIENT_GUID'] == _selectedClient,
+          (client) => client['CLIENT_GUID'] == clockProvider.selectedClient,
         );
 
         if (!clientExists) {
           debugPrint(
             '⚠️ Selected client not in filtered list for $jobType, clearing selection',
           );
-          _selectedClient = null;
-          _selectedProject = null;
-          _selectedContract = null;
+          clockProvider.selectedClient = null;
+          clockProvider.selectedProject = null;
+          clockProvider.selectedContract = null;
         }
       }
     });
@@ -1622,11 +1521,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final auth = Provider.of<AuthProvider>(context);
     final attendance = Provider.of<AttendanceProvider>(context);
+    final clockProvider = Provider.of<ClockProvider>(context);
+    final connectivity = Provider.of<ConnectivityService>(context);
+
     final email = auth.userInfo?['email'] ?? 'No email';
     final companyName = auth.userInfo?['companyName'] ?? 'No company';
 
+    final isOnline = connectivity.online;
     // ✨ FIX: Safe check for monitoring status
-    final isMonitoring = _autoClockOutService?.isMonitoring ?? false;
+    final isMonitoring =
+        clockProvider.autoClockOutService?.isMonitoring ?? false;
 
     return Scaffold(
       appBar: PreferredSize(
@@ -1655,12 +1559,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: _isOnline
+                      color: isOnline
                           ? Colors.green.withOpacity(0.2)
                           : Colors.red.withOpacity(0.2),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: _isOnline ? Colors.green : Colors.red,
+                        color: isOnline ? Colors.green : Colors.red,
                         width: 1.5,
                       ),
                     ),
@@ -1668,17 +1572,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          _isOnline ? Icons.wifi : Icons.wifi_off,
-                          color: _isOnline ? Colors.green : Colors.red,
+                          isOnline ? Icons.wifi : Icons.wifi_off,
+                          color: isOnline ? Colors.green : Colors.red,
                           size: 16,
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          _isOnline ? 'Online' : 'Offline',
+                          isOnline ? 'Online' : 'Offline',
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
-                            color: _isOnline ? Colors.green : Colors.red,
+                            color: isOnline ? Colors.green : Colors.red,
                           ),
                         ),
                       ],
@@ -1726,22 +1630,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
       ),
       drawer: const AppDrawer(),
-      bottomNavigationBar: AppBottomNav(
-        currentIndex: _currentIndex,
-        onTap: (index) {
-          if (index == 1) {
-            // Navigate to history page
-            Navigator.pushNamed(context, '/history');
-          } else if (index == 2) {
-            // Navigate to report page
-            Navigator.pushNamed(context, '/report');
-          } else if (index == 3) {
-            // Navigate to profile page
-            Navigator.pushNamed(context, '/profile');
-          }
-          // If index == 0 (Home), do nothing as we're already here
-        },
-      ),
       body: RefreshIndicator(
         onRefresh: _initializeData,
         child: SingleChildScrollView(
@@ -1751,11 +1639,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               _buildTimeCard(),
               // const SizedBox(height: 10),
               _buildJobTypeButtons(attendance),
-              if (_selectedJobType.isNotEmpty) _buildForm(),
+              if (clockProvider.selectedJobType.isNotEmpty) _buildForm(),
               _buildLocationDisplay(),
               const SizedBox(height: 20),
               _buildClockButton(),
-              // if (_isClockedIn) _buildGeofenceStatus(),
+              if (clockProvider.isClockedIn && email == 'irfan@zen.com.my')
+                _buildGeofenceStatus(),
               const SizedBox(height: 30),
             ],
           ),
@@ -1765,8 +1654,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Widget _buildGeofenceStatus() {
-    final isMonitoring = _autoClockOutService?.isMonitoring ?? false;
-    if (!isMonitoring) return const SizedBox();
+    // Geofence status is now handled via clockProvider.autoClockOutService
+    if (!clockProvider.isClockedIn) return const SizedBox();
 
     return Container(
       margin: const EdgeInsets.all(15),
@@ -1795,7 +1684,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       ),
                     ),
                     Text(
-                      'Monitoring: ${_autoClockOutService?.targetAddress ?? 'Work Location'}',
+                      'Monitoring: ${clockProvider.autoClockOutService?.targetAddress ?? 'Work Location'}',
                       style: TextStyle(
                         fontSize: 12,
                         color: Colors.grey.shade700,
@@ -1804,7 +1693,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
-                      'Auto clock-out if you move >${_autoClockOutService?.radiusInMeters.toStringAsFixed(0) ?? 'N/A'}m away',
+                      'Auto clock-out if you move >${clockProvider.autoClockOutService?.radiusInMeters.toStringAsFixed(0) ?? 'N/A'}m away',
                       style: const TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                   ],
@@ -1832,19 +1721,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             overflow: TextOverflow.ellipsis,
           ),
           Text(
-            'Target: ${_autoClockOutService?.targetLat?.toStringAsFixed(6) ?? 'N/A'}, ${_autoClockOutService?.targetLng?.toStringAsFixed(6) ?? 'N/A'}',
+            'Target: ${clockProvider.autoClockOutService?.targetLat?.toStringAsFixed(6) ?? 'N/A'}, ${clockProvider.autoClockOutService?.targetLng?.toStringAsFixed(6) ?? 'N/A'}',
             style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
           Text(
-            'Distance: ${_lastDistance?.toStringAsFixed(2) ?? 'N/A'}m (Radius: ${_autoClockOutService?.radiusInMeters.toStringAsFixed(1) ?? 'N/A'}m)',
+            'Distance: ${_lastDistance?.toStringAsFixed(2) ?? 'N/A'}m (Radius: ${clockProvider.autoClockOutService?.radiusInMeters.toStringAsFixed(1) ?? 'N/A'}m)',
             style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.bold,
               color:
                   (_lastDistance ?? 0) >
-                      (_autoClockOutService?.radiusInMeters ?? 0)
+                      (clockProvider.autoClockOutService?.radiusInMeters ?? 0)
                   ? Colors.red
                   : Colors.green,
             ),
@@ -1877,15 +1766,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            _isClockedIn ? 'Clocked In' : 'Clock In',
+            clockProvider.isClockedIn ? 'Clocked In' : 'Clock In',
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.bold,
-              color: _isClockedIn ? Colors.red : const Color(0xFF2DD36F),
+              color: clockProvider.isClockedIn
+                  ? Colors.red
+                  : const Color(0xFF2DD36F),
             ),
           ),
           Text(
-            _clockStatus,
+            clockProvider.clockStatus,
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
@@ -1931,13 +1822,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Widget _buildJobButton(String title) {
-    final isSelected = _selectedJobType == title;
+    final isSelected = clockProvider.selectedJobType == title;
     const purpleBlue = Color(
       0xFF6366F1,
     ); // Purple-blue/indigo to match background theme
     return Expanded(
       child: GestureDetector(
-        onTap: _isClockedIn ? null : () => _onJobTypeSelected(title),
+        onTap: clockProvider.isClockedIn
+            ? null
+            : () => _onJobTypeSelected(title),
         child: Container(
           margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 10),
           padding: const EdgeInsets.symmetric(vertical: 12),
@@ -2005,18 +1898,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget _buildLocationDisplay() {
     // ✨ Determine radius based on job type's geofence_filter setting
     double? displayRadius;
-    if (_selectedJobType.isNotEmpty) {
+    if (clockProvider.selectedJobType.isNotEmpty) {
       final attendance = Provider.of<AttendanceProvider>(
         context,
         listen: false,
       );
-      final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+      final jobTypeConfig = attendance.getFieldsForJobType(
+        clockProvider.selectedJobType,
+      );
       final shouldShowRadius = jobTypeConfig['geofence_filter'] ?? false;
 
       if (shouldShowRadius) {
         // ✨ Get dynamic radius (fallback to default)
         final configRadius =
-            attendance.getRadiusForJobType(_selectedJobType) ??
+            attendance.getRadiusForJobType(clockProvider.selectedJobType) ??
             GeofenceConfig.mapDisplayRadius;
         displayRadius = configRadius;
       }
@@ -2102,28 +1997,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             _buildDropdown(
               'Client',
               _getNearbyClients(), // Use filtered list
-              _selectedClient,
+              clockProvider.selectedClient,
               'CLIENT_GUID',
               'NAME',
-              (v) => setState(() => _selectedClient = v),
+              (v) => setState(() => clockProvider.selectedClient = v),
             ),
           if (_fieldVisibility['project'] == true)
             _buildDropdown(
               'Project',
-              _projects,
-              _selectedProject,
+              clockProvider.projects,
+              clockProvider.selectedProject,
               'PROJECT_GUID',
               'NAME',
-              (v) => setState(() => _selectedProject = v),
+              (v) => setState(() => clockProvider.selectedProject = v),
             ),
           if (_fieldVisibility['contract'] == true)
             _buildDropdown(
               'Contract',
-              _contracts,
-              _selectedContract,
+              clockProvider.contracts,
+              clockProvider.selectedContract,
               'CONTRACT_GUID',
               'NAME',
-              (v) => setState(() => _selectedContract = v),
+              (v) => setState(() => clockProvider.selectedContract = v),
             ),
           if (_fieldVisibility['activity'] == true) _buildActivityField(),
         ],
@@ -2139,7 +2034,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     String labelKey,
     Function(String?) onChanged,
   ) {
-    if (_loadingDropdowns)
+    if (clockProvider.loadingDropdowns)
       return const Padding(
         padding: EdgeInsets.all(10),
         child: CircularProgressIndicator(),
@@ -2153,7 +2048,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         listen: false,
       );
       final radius =
-          attendance.getRadiusForJobType(_selectedJobType) ??
+          attendance.getRadiusForJobType(clockProvider.selectedJobType) ??
           GeofenceConfig.clientFilterRadius;
 
       return Container(
@@ -2228,7 +2123,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
             )
             .toList(),
-        onChanged: _isClockedIn ? null : onChanged,
+        onChanged: clockProvider.isClockedIn ? null : onChanged,
       ),
     );
   }
@@ -2236,9 +2131,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget _buildActivityField() {
     return TextField(
       controller: _activityController,
-      enabled: !_isClockedIn,
+      enabled: !clockProvider.isClockedIn,
       maxLines: 3,
-      onChanged: (v) => _activityName = v,
+      onChanged: (v) => clockProvider.activityName = v,
       decoration: const InputDecoration(
         labelText: 'Activity List',
         hintText: 'Add task here',
@@ -2255,12 +2150,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         sliderButtonIconSize: 20,
         sliderButtonIconPadding: 14,
         innerColor: Colors.white,
-        outerColor: _isClockedIn ? Colors.red : const Color(0xFF2DD36F),
+        outerColor: clockProvider.isClockedIn
+            ? Colors.red
+            : const Color(0xFF2DD36F),
         sliderButtonIcon: Icon(
-          _isClockedIn ? Icons.logout : Icons.login,
-          color: _isClockedIn ? Colors.red : const Color(0xFF2DD36F),
+          clockProvider.isClockedIn ? Icons.logout : Icons.login,
+          color: clockProvider.isClockedIn
+              ? Colors.red
+              : const Color(0xFF2DD36F),
         ),
-        text: _isClockedIn ? 'Slide to Clock Out' : 'Slide to Clock In',
+        text: clockProvider.isClockedIn
+            ? 'Slide to Clock Out'
+            : 'Slide to Clock In',
         textStyle: const TextStyle(
           color: Colors.white,
           fontSize: 16,

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:beewhere/controller/history_api.dart';
 import 'package:beewhere/theme/color_theme.dart';
-import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:beewhere/widgets/drawer.dart';
 import 'package:beewhere/widgets/edit_activity_dialog.dart';
 import 'package:beewhere/widgets/edit_time_request_dialog.dart';
@@ -304,19 +303,6 @@ class _HistoryPageState extends State<HistoryPage> {
         ),
       ),
       drawer: const AppDrawer(),
-      bottomNavigationBar: AppBottomNav(
-        currentIndex: 1, // History is index 1
-        onTap: (index) {
-          if (index == 0) {
-            Navigator.pushReplacementNamed(context, '/home');
-          } else if (index == 2) {
-            Navigator.pushReplacementNamed(context, '/report');
-          } else if (index == 3) {
-            Navigator.pushReplacementNamed(context, '/profile');
-          }
-          // If index == 1 (History), do nothing as we're already here
-        },
-      ),
       body: Column(
         children: [
           _buildSummaryCard(),
@@ -393,6 +379,7 @@ class _HistoryPageState extends State<HistoryPage> {
     return RefreshIndicator(
       onRefresh: _loadHistory,
       child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
         controller: _scrollController,
         padding: const EdgeInsets.all(15),
         itemCount: _records.length + (_isLoadingMore ? 1 : 0),
@@ -692,57 +679,96 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   Widget _buildEmptyView() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.history, size: 80, color: Colors.grey.shade300),
-          const SizedBox(height: 20),
-          Text(
-            'No attendance records found',
-            style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Try adjusting the date range',
-            style: TextStyle(fontSize: 14, color: Colors.grey.shade400),
-          ),
-        ],
+    return RefreshIndicator(
+      onRefresh: _loadHistory,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.history, size: 80, color: Colors.grey.shade300),
+                    const SizedBox(height: 20),
+                    Text(
+                      'No attendance records found',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Try adjusting the date range',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey.shade400,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
 
   Widget _buildErrorView() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.error_outline, size: 80, color: Colors.red.shade300),
-          const SizedBox(height: 20),
-          Text(
-            'Error Loading History',
-            style: TextStyle(
-              fontSize: 16,
-              color: Colors.grey.shade600,
-              fontWeight: FontWeight.bold,
+    return RefreshIndicator(
+      onRefresh: _loadHistory,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.error_outline,
+                      size: 80,
+                      color: Colors.red.shade300,
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      'Error Loading History',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey.shade600,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 40),
+                      child: Text(
+                        _errorMessage ?? 'Unknown error',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey.shade400,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton.icon(
+                      onPressed: _loadHistory,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 40),
-            child: Text(
-              _errorMessage ?? 'Unknown error',
-              style: TextStyle(fontSize: 14, color: Colors.grey.shade400),
-              textAlign: TextAlign.center,
-            ),
-          ),
-          const SizedBox(height: 20),
-          ElevatedButton.icon(
-            onPressed: _loadHistory,
-            icon: const Icon(Icons.refresh),
-            label: const Text('Retry'),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
