@@ -36,7 +36,6 @@ dependencies:
   package_info_plus: ^8.0.0 
   flutter_map_marker_cluster: ^8.2.2
   connectivity_plus: ^5.0.0
-  flutter_map_tile_caching: ^10.1.1
 
 dev_dependencies:
   flutter_test:

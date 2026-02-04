@@ -15,7 +15,6 @@ import 'package:beewhere/services/sync_service.dart';
 import 'package:beewhere/services/logger_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 
 void main() async {
   // Ensure Flutter binding is initialized
@@ -29,20 +28,6 @@ void main() async {
   await PendingSyncService.init();
   ConnectivityService.init();
   SyncService.init();
-
-  // ✨ Initialize map tile caching for offline use
-  try {
-    // Initialize the caching backend
-    await FMTCObjectBoxBackend().initialise();
-
-    // Create the map store (only creates if doesn't exist)
-    await FMTCStore('mapStore').manage.create(); // ✅ Changed from FMTC.instance
-
-    debugPrint('✅ Map tile caching initialized');
-  } catch (e) {
-    // If store already exists, this will throw an error - that's OK
-    debugPrint('ℹ️ Map caching note: $e');
-  }
 
   runApp(
     MultiProvider(
