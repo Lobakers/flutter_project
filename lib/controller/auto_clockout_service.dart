@@ -32,7 +32,7 @@ class AutoClockOutService {
   // ✨ GPS drift protection
   int _violationCount = 0;
   int _requiredViolations = GeofenceConfig.requiredViolations;
-
+  
   // ✨ Minimum time before auto clock-out can trigger (prevents immediate trigger)
   DateTime? _monitoringStartTime;
   static const Duration _minimumClockInDuration = Duration(seconds: 30);
@@ -88,33 +88,33 @@ class AutoClockOutService {
         timer.cancel();
         return;
       }
-
+      
       try {
         // Get current position
         final position = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high,
           timeLimit: const Duration(seconds: 10),
         );
-
+        
         await _checkLocation(position);
       } catch (e) {
         debugPrint('❌ Error getting position: $e');
-
+        
         // Check if error is due to location service being disabled
         final isEnabled = await _checkLocationServiceStatus();
         if (!isEnabled) {
           debugPrint('🚨 Location service disabled (detected via error)');
-
+          
           // Trigger callback
           if (onLeaveGeofence != null) {
             await onLeaveGeofence!(-1.0);
           }
-
+          
           stopMonitoring();
         }
       }
     });
-
+    
     // ✨ Do an immediate first check (don't wait for first interval)
     try {
       final position = await Geolocator.getCurrentPosition(
@@ -245,27 +245,28 @@ class AutoClockOutService {
 
   void _startLocationServiceMonitoring() {
     // Check every 5 seconds if location service is still enabled
-    _locationServiceCheckTimer = Timer.periodic(const Duration(seconds: 5), (
-      timer,
-    ) async {
-      if (!_isMonitoring) {
-        timer.cancel();
-        return;
-      }
-
-      final isEnabled = await _checkLocationServiceStatus();
-      if (!isEnabled) {
-        debugPrint('🚨 Location service DISABLED! Triggering auto clock-out');
-
-        // Trigger callback with a special distance value (-1) to indicate location disabled
-        if (onLeaveGeofence != null) {
-          await onLeaveGeofence!(-1.0);
+    _locationServiceCheckTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (timer) async {
+        if (!_isMonitoring) {
+          timer.cancel();
+          return;
         }
 
-        // Stop monitoring
-        stopMonitoring();
-      }
-    });
+        final isEnabled = await _checkLocationServiceStatus();
+        if (!isEnabled) {
+          debugPrint('🚨 Location service DISABLED! Triggering auto clock-out');
+          
+          // Trigger callback with a special distance value (-1) to indicate location disabled
+          if (onLeaveGeofence != null) {
+            await onLeaveGeofence!(-1.0);
+          }
+
+          // Stop monitoring
+          stopMonitoring();
+        }
+      },
+    );
   }
 
   /// Manually check location (for testing or refresh button)

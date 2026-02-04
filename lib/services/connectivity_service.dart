@@ -3,16 +3,11 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 
 /// Service to monitor internet connectivity and trigger sync
-class ConnectivityService with ChangeNotifier {
+class ConnectivityService {
   static final Connectivity _connectivity = Connectivity();
   static StreamSubscription<ConnectivityResult>? _subscription;
   static bool _isOnline = true;
   static final List<Function()> _syncCallbacks = [];
-
-  // Singleton pattern for Provider
-  static final ConnectivityService _instance = ConnectivityService._internal();
-  factory ConnectivityService() => _instance;
-  ConnectivityService._internal();
 
   /// Initialize connectivity monitoring
   static void init() {
@@ -41,9 +36,6 @@ class ConnectivityService with ChangeNotifier {
       debugPrint('🔄 Connection restored, triggering sync...');
       _triggerSync();
     }
-
-    // Notify listeners if registered as provider
-    _instance.notifyListeners();
   }
 
   /// Check current connectivity status
@@ -51,7 +43,6 @@ class ConnectivityService with ChangeNotifier {
     try {
       final result = await _connectivity.checkConnectivity();
       _isOnline = result != ConnectivityResult.none;
-      _instance.notifyListeners();
       return _isOnline;
     } catch (e) {
       debugPrint('❌ Error checking connectivity: $e');
@@ -61,9 +52,6 @@ class ConnectivityService with ChangeNotifier {
 
   /// Check if currently online
   static bool get isOnline => _isOnline;
-
-  // Instance getter for Provider
-  bool get online => _isOnline;
 
   /// Register a callback to be called when connection is restored
   static void registerSyncCallback(Function() callback) {
@@ -96,8 +84,8 @@ class ConnectivityService with ChangeNotifier {
     }
   }
 
-  /// Shutdown connectivity service
-  static void shutdown() {
+  /// Dispose connectivity service
+  static void dispose() {
     _subscription?.cancel();
     _subscription = null;
     _syncCallbacks.clear();

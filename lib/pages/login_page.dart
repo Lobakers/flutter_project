@@ -1,5 +1,6 @@
 import 'package:beewhere/controller/login.api.dart';
 import 'package:beewhere/controller/user_info.api.dart';
+import 'package:beewhere/pages/home_page.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:flutter/material.dart';
@@ -245,8 +246,13 @@ class _LoginPageState extends State<LoginPage> {
 
                             print('Login successful. Token: $token');
 
-                            //Navigate to HomePage via Shell
-                            Navigator.pushReplacementNamed(context, '/home');
+                            //Navigate to HomePage
+                            Navigator.pushReplacement(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const HomePage(),
+                              ),
+                            );
                           } else {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(content: Text(result['message'])),

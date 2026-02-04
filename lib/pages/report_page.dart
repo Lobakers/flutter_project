@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:beewhere/controller/report_api.dart';
 import 'package:beewhere/widgets/drawer.dart';
-import 'package:beewhere/widgets/drawer.dart';
+import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:beewhere/services/connectivity_service.dart';
@@ -316,6 +316,18 @@ class _ReportPageState extends State<ReportPage> {
         ),
       ),
       drawer: const AppDrawer(),
+      bottomNavigationBar: AppBottomNav(
+        currentIndex: _currentIndex,
+        onTap: (index) {
+          if (index == 0) {
+            Navigator.pushReplacementNamed(context, '/home');
+          } else if (index == 1) {
+            Navigator.pushReplacementNamed(context, '/history');
+          } else if (index == 3) {
+            Navigator.pushReplacementNamed(context, '/profile');
+          }
+        },
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
