@@ -38,27 +38,19 @@ class LocationPermissionService {
     }
 
     // Step 3: Request foreground location
-    debugPrint('📍 Step 3: Requesting foreground location...');
     final foregroundGranted = await _requestForegroundLocation(context);
     if (!foregroundGranted) {
       debugPrint('❌ Foreground location permission denied');
       return false;
     }
-    debugPrint('✅ Foreground location permission granted');
-
-    // ✨ iOS FIX: Add delay between foreground and background requests
-    // This gives iOS time to fully process the first permission
-    await Future.delayed(const Duration(milliseconds: 300));
 
     // Step 4: Check if background location is already granted
-    debugPrint('📍 Step 4: Checking background location status...');
     if (await hasBackgroundPermission()) {
       debugPrint('✅ Background location already granted');
       return true;
     }
 
     // Step 5: Request background location permission
-    debugPrint('📍 Step 5: Requesting background location...');
     final backgroundGranted = await _requestBackgroundLocation();
     if (!backgroundGranted) {
       debugPrint('❌ Background location permission denied');
@@ -108,21 +100,8 @@ class LocationPermissionService {
 
   /// Request background location permission
   static Future<bool> _requestBackgroundLocation() async {
-    debugPrint('🔵 Requesting background location permission...');
     final status = await ph.Permission.locationAlways.request();
-
-    debugPrint('🔵 Initial status after request: $status');
-
-    // ✨ iOS FIX: Add delay to allow iOS to process permission response
-    // This is especially important in the simulator where permission state
-    // updates happen asynchronously
-    await Future.delayed(const Duration(milliseconds: 500));
-
-    // ✨ Re-check permission status after delay
-    final finalStatus = await ph.Permission.locationAlways.status;
-    debugPrint('🔵 Final status after delay: $finalStatus');
-
-    return finalStatus.isGranted;
+    return status.isGranted;
   }
 
   /// Check if location services are enabled
