@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/widgets.dart';
 import 'package:beewhere/controller/geofence_helper.dart';
 import 'package:beewhere/config/geofence_config.dart';
 import 'package:beewhere/services/logger_service.dart';
@@ -73,8 +74,8 @@ class BackgroundGeofenceService {
         eventAction: ForegroundTaskEventAction.repeat(
           GeofenceConfig.backgroundCheckInterval.inMilliseconds,
         ),
-        autoRunOnBoot: false,
-        autoRunOnMyPackageReplaced: false,
+        autoRunOnBoot: true,
+        autoRunOnMyPackageReplaced: true,
         allowWakeLock: true,
         allowWifiLock: false,
       ),
@@ -120,21 +121,28 @@ class BackgroundGeofenceService {
 /// Callback function for foreground task
 /// This runs every 15 seconds in the background
 @pragma('vm:entry-point')
-void startCallback() {
-  // ✨ Initialize OfflineDatabase in background isolate
-  OfflineDatabase.init().then((_) {
+Future<void> startCallback() async {
+  // ✨ CRITICAL: Initialize Flutter bindings first in background isolate
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // ✨ FIX: Make initialization synchronous with await to prevent race conditions
+  try {
+    await OfflineDatabase.init();
+    await PendingSyncService.init();
     LoggerService.info(
-      'OfflineDatabase initialized in background isolate',
+      '✅ Databases initialized in background isolate',
       tag: 'BackgroundGeofence',
     );
-  }).catchError((e) {
+  } catch (e) {
     LoggerService.error(
-      'Failed to initialize OfflineDatabase in background isolate',
+      '❌ CRITICAL: Failed to initialize databases in background isolate',
       tag: 'BackgroundGeofence',
       error: e,
     );
-  });
-  
+    // Don't start the task handler if databases failed to initialize
+    return;
+  }
+
   FlutterForegroundTask.setTaskHandler(GeofenceTaskHandler());
 }
 
@@ -164,7 +172,9 @@ class GeofenceTaskHandler extends TaskHandler {
     try {
       // ✨ Check if app is in foreground - if so, skip background check
       // The foreground service (AutoClockOutService) will handle it
-      final appInForeground = await FlutterForegroundTask.getData<bool>(key: 'appInForeground');
+      final appInForeground = await FlutterForegroundTask.getData<bool>(
+        key: 'appInForeground',
+      );
       if (appInForeground == true) {
         LoggerService.debug(
           'App is in foreground, skipping background check (foreground service handles it)',
@@ -272,6 +282,17 @@ class GeofenceTaskHandler extends TaskHandler {
             tag: 'GeofenceTaskHandler',
           );
 
+          // ✨ NEW: Cross-Isolate/Cross-Engine Lock Check
+          final isAlreadyProcessing = await FlutterForegroundTask.getData<bool>(
+            key: 'is_currently_clocking_out',
+          );
+          if (isAlreadyProcessing == true) {
+            LoggerService.warning(
+              '⚠️ Auto clock-out already being processed globally, skipping background check.',
+            );
+            return;
+          }
+
           await _performAutoClockOut(
             distance,
             targetAddress ?? 'work location',
@@ -310,13 +331,36 @@ class GeofenceTaskHandler extends TaskHandler {
       );
 
       // ✨ DOUBLE-CHECK: Is app in foreground? If so, abort (foreground service handles it)
-      final appInForeground = await FlutterForegroundTask.getData<bool>(key: 'appInForeground');
+      final appInForeground = await FlutterForegroundTask.getData<bool>(
+        key: 'appInForeground',
+      );
       if (appInForeground == true) {
         LoggerService.warning(
           'App is in foreground during clock-out attempt, aborting (foreground service will handle it)',
           tag: 'GeofenceTaskHandler',
         );
         return;
+      }
+
+      // ✨ NEW: Check database to verify user is still clocked in
+      // This prevents duplicate clock-out if foreground service already processed it
+      try {
+        final clockStatus = await OfflineDatabase.getClockStatus();
+        if (clockStatus != null && clockStatus['isClockedIn'] == false) {
+          LoggerService.warning(
+            'User already clocked out (checked database), aborting',
+            tag: 'GeofenceTaskHandler',
+          );
+          await FlutterForegroundTask.stopService();
+          return;
+        }
+      } catch (e) {
+        LoggerService.error(
+          'Failed to check clock status from database',
+          tag: 'GeofenceTaskHandler',
+          error: e,
+        );
+        // Continue anyway - don't let database errors block auto clock-out
       }
 
       // Get clock state
@@ -411,27 +455,20 @@ class GeofenceTaskHandler extends TaskHandler {
           tag: 'GeofenceTaskHandler',
         );
 
-        // ✨ CRITICAL: Ensure PendingSyncService is initialized in background isolate
-        // The background isolate has its own database connection
+        // ✨ Database already initialized in startCallback, just use it
         try {
-          await PendingSyncService.init();
-          LoggerService.info(
-            '✅ PendingSyncService initialized in background isolate',
-            tag: 'GeofenceTaskHandler',
-          );
-          
           await PendingSyncService.addPendingAction(
             actionType: 'clock_out',
             payload: clockOutPayload,
           );
-          
+
           // Verify it was added
           final pendingCount = await PendingSyncService.getPendingCount();
           LoggerService.info(
             '✅ Clock-out action queued. Total pending actions: $pendingCount',
             tag: 'GeofenceTaskHandler',
           );
-          
+
           // List all pending actions for debugging
           final allActions = await PendingSyncService.getPendingActions();
           LoggerService.debug(
@@ -440,10 +477,22 @@ class GeofenceTaskHandler extends TaskHandler {
           );
         } catch (e) {
           LoggerService.error(
-            'Failed to queue clock-out action',
+            '❌ CRITICAL: Failed to queue clock-out action',
             tag: 'GeofenceTaskHandler',
             error: e,
           );
+
+          // ✨ Show error notification to user
+          await NotificationService.showAutoClockOutNotification(
+            distance: distance,
+            location: location,
+            reason: 'queue_failed',
+          );
+
+          // ✨ CRITICAL: Don't proceed if queue failed
+          // Keep user clocked in so they can manually clock out
+          await FlutterForegroundTask.stopService();
+          return;
         }
 
         // Show notification
@@ -461,7 +510,7 @@ class GeofenceTaskHandler extends TaskHandler {
         try {
           // Ensure OfflineDatabase is initialized before updating
           await OfflineDatabase.init();
-          
+
           await OfflineDatabase.saveClockStatus({
             'isClockedIn': false,
             'clockLogGuid': null,
@@ -473,7 +522,7 @@ class GeofenceTaskHandler extends TaskHandler {
             'contractId': null,
             'activityName': null,
           });
-          
+
           LoggerService.info(
             '✅ Updated OfflineDatabase to clocked-out status (OFFLINE)',
             tag: 'GeofenceTaskHandler',
@@ -505,16 +554,28 @@ class GeofenceTaskHandler extends TaskHandler {
         return;
       }
 
-      final response = await http.post(
-        Uri.parse('https://amscore.beesuite.app/api/clock/transaction'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'JWT $token',
-        },
-        body: jsonEncode(clockOutPayload),
-      );
+      // online post call
+      http.Response? response;
+      try {
+        response = await http
+            .post(
+              Uri.parse('https://amscore.beesuite.app/api/clock/transaction'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'JWT $token',
+              },
+              body: jsonEncode(clockOutPayload),
+            )
+            .timeout(const Duration(seconds: 20));
+      } catch (e) {
+        LoggerService.error(
+          'Auto clock-out API request failed (network error)',
+          tag: 'GeofenceTaskHandler',
+          error: e,
+        );
+      }
 
-      if (response.statusCode == 201) {
+      if (response != null && response.statusCode == 201) {
         LoggerService.info(
           'Auto clock-out API success',
           tag: 'GeofenceTaskHandler',
@@ -527,10 +588,53 @@ class GeofenceTaskHandler extends TaskHandler {
           reason: reason,
         );
       } else {
+        final errorMsg = response != null
+            ? 'Status: ${response.statusCode}'
+            : 'Network Timeout';
         LoggerService.error(
-          'Auto clock-out API failed: ${response.statusCode}',
+          'Auto clock-out API failed ($errorMsg), falling back to offline queue',
           tag: 'GeofenceTaskHandler',
         );
+
+        // ✨ CRITICAL FALLBACK: Queue it anyway so it's not lost!
+        try {
+          // Add a flag to payload to let sync service know this was a failed online attempt
+          final fallbackPayload = Map<String, dynamic>.from(clockOutPayload);
+          fallbackPayload['_isFallback'] = true;
+
+          await PendingSyncService.addPendingAction(
+            actionType: 'clock_out',
+            payload: fallbackPayload,
+          );
+
+          LoggerService.info(
+            '✅ Queued failed online auto-clock-out to offline queue',
+            tag: 'GeofenceTaskHandler',
+          );
+
+          // Show standard notification but maybe with a hint it's pending sync
+          await NotificationService.showAutoClockOutNotification(
+            distance: distance,
+            location: location,
+            reason: reason,
+          );
+        } catch (queueError) {
+          LoggerService.error(
+            '❌ FAILED TO QUEUE FALLBACK ACTION: $queueError',
+            tag: 'GeofenceTaskHandler',
+          );
+
+          // Last resort: Red notification
+          await NotificationService.showAutoClockOutNotification(
+            distance: distance,
+            location: location,
+            reason: 'queue_failed',
+          );
+
+          // Abort clearing state so user can try again
+          await FlutterForegroundTask.stopService();
+          return;
+        }
       }
 
       // Clear clock-in state
@@ -541,7 +645,7 @@ class GeofenceTaskHandler extends TaskHandler {
       try {
         // Ensure OfflineDatabase is initialized before updating
         await OfflineDatabase.init();
-        
+
         await OfflineDatabase.saveClockStatus({
           'isClockedIn': false,
           'clockLogGuid': null,
@@ -553,7 +657,7 @@ class GeofenceTaskHandler extends TaskHandler {
           'contractId': null,
           'activityName': null,
         });
-        
+
         LoggerService.info(
           '✅ Updated offline database cache to clocked-out status (ONLINE)',
           tag: 'GeofenceTaskHandler',
@@ -583,7 +687,7 @@ class GeofenceTaskHandler extends TaskHandler {
         error: e,
         stackTrace: stackTrace,
       );
-      
+
       // Ensure service stops even on error
       try {
         await FlutterForegroundTask.stopService();
@@ -594,6 +698,16 @@ class GeofenceTaskHandler extends TaskHandler {
           error: stopError,
         );
       }
+    } finally {
+      // ✨ NEW: Clear the global lock after background clock-out attempt
+      await FlutterForegroundTask.saveData(
+        key: 'is_currently_clocking_out',
+        value: false,
+      );
+      LoggerService.info(
+        '🔓 Global native auto clock-out lock reset (BACKGROUND)',
+        tag: 'GeofenceTaskHandler',
+      );
     }
   }
 }

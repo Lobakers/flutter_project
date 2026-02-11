@@ -8,14 +8,16 @@ class ApiService {
   static Future<http.Response> get(BuildContext context, String url) async {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
 
-    return await http.get(
-      Uri.parse(url),
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        if (token != null) 'Authorization': 'JWT $token',
-      },
-    );
+    return await http
+        .get(
+          Uri.parse(url),
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            if (token != null) 'Authorization': 'JWT $token',
+          },
+        )
+        .timeout(const Duration(seconds: 20));
   }
 
   static Future<http.Response> post(
@@ -25,15 +27,17 @@ class ApiService {
   ) async {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
 
-    return await http.post(
-      Uri.parse(url),
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        if (token != null) 'Authorization': 'JWT $token',
-      },
-      body: jsonEncode(body),
-    );
+    return await http
+        .post(
+          Uri.parse(url),
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            if (token != null) 'Authorization': 'JWT $token',
+          },
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 20));
   }
 
   static Future<http.Response> patch(
@@ -43,14 +47,16 @@ class ApiService {
   ) async {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
 
-    return await http.patch(
-      Uri.parse(url),
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        if (token != null) 'Authorization': 'JWT $token',
-      },
-      body: jsonEncode(body),
-    );
+    return await http
+        .patch(
+          Uri.parse(url),
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            if (token != null) 'Authorization': 'JWT $token',
+          },
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 20));
   }
 }

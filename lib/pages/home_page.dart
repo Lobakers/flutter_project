@@ -11,9 +11,9 @@ import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/services/background_geofence_service.dart';
 import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/services/location_permission_service.dart';
+import 'package:beewhere/services/pending_sync_service.dart'; // ✨ NEW
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
-import 'package:beewhere/theme/color_theme.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:beewhere/widgets/device_info_helper.dart';
 import 'package:beewhere/widgets/drawer.dart';
@@ -27,6 +27,8 @@ import 'package:beewhere/config/geofence_config.dart';
 import 'package:beewhere/services/connectivity_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:io';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -79,6 +81,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // Connectivity state
   bool _isOnline = true;
+  int _pendingSyncCount = 0; // ✨ NEW: Track pending actions for UI badge
   StreamSubscription<ConnectivityResult>? _connectivitySubscription;
 
   double? _currentUserLat;
@@ -215,6 +218,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
 
+    // ✨ NEW: Check if already processing via the service's global lock
+    // This handles cases where multiple HomePage instances might exist
+    // if (!AutoClockOutService.isGloballyProcessing) { ... } -- Service already blocked the call,
+    // but we add it here as a safety log.
+    debugPrint(
+      'ℹ️ _onUserLeftGeofence processing start. Global lock should be active.',
+    );
+
     // Check if already processing an auto clock-out
     if (_isAutoClockingOut) {
       debugPrint(
@@ -243,19 +254,74 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           '🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Location service DISABLED',
         );
 
+        // ✨ NEW: Immediately update local and database state so background isolate sees us as clocked out
+        setState(() => _isClockedIn = false);
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': false,
+          'clockLogGuid': null,
+          'clockTime': null,
+          'jobType': null,
+          'address': null,
+          'clientId': null,
+          'projectId': null,
+          'contractId': null,
+          'activityName': null,
+        });
+
         if (mounted) {
           _showLocationDisabledDialog();
         }
-
         await _performClockOut(
           isAutomatic: true,
           distance: 0,
           reason: 'location_disabled',
         );
+      } else if (distance == -2.0) {
+        debugPrint(
+          '🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Location permission REVOKED',
+        );
+
+        // ✨ Immediately update state
+        setState(() => _isClockedIn = false);
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': false,
+          'clockLogGuid': null,
+          'clockTime': null,
+          'jobType': null,
+          'address': null,
+          'clientId': null,
+          'projectId': null,
+          'contractId': null,
+          'activityName': null,
+        });
+
+        if (mounted) {
+          _showPermissionRevokedDialog();
+        }
+
+        await _performClockOut(
+          isAutomatic: true,
+          distance: 0,
+          reason: 'permission_revoked',
+        );
       } else {
         debugPrint(
           '🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
         );
+
+        // ✨ NEW: Immediately update local and database state so background isolate sees us as clocked out
+        setState(() => _isClockedIn = false);
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': false,
+          'clockLogGuid': null,
+          'clockTime': null,
+          'jobType': null,
+          'address': null,
+          'clientId': null,
+          'projectId': null,
+          'contractId': null,
+          'activityName': null,
+        });
 
         if (mounted) {
           _showAutoClockOutDialog(distance);
@@ -267,90 +333,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       // Reset flag after clock-out completes
       _isAutoClockingOut = false;
     }
-  }
-
-  void _showAutoClockOutDialog(double distance) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        backgroundColor: Colors.orange,
-        title: const Text(
-          'Auto Clock Out',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.location_off, size: 50, color: Colors.white),
-            const SizedBox(height: 10),
-            Text(
-              'You have moved ${distance.toStringAsFixed(0)}m away from your work location.',
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'You have been automatically clocked out.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showLocationDisabledDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        backgroundColor: Colors.red,
-        title: const Text(
-          'Auto Clock Out',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.location_disabled, size: 50, color: Colors.white),
-            const SizedBox(height: 10),
-            const Text(
-              'Location service has been disabled.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'You have been automatically clocked out.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
   }
 
   // ✨ LOAD CACHED DATA FOR INSTANT UI
@@ -411,6 +393,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await _loadAttendanceProfile();
     await _loadDropdownData();
     // Logic moved to _initLocationAndClock to allow UI to build first
+
+    // ✨ Update pending sync count
+    try {
+      final count = await PendingSyncService.getPendingCount();
+      if (mounted) {
+        setState(() => _pendingSyncCount = count);
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error updating pending count: $e');
+    }
   }
 
   // ✨ NEW: Handle permissions, location, and clock status after frame build
@@ -943,6 +935,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       });
 
       // ✨ START GEOFENCE MONITORING AFTER CLOCK IN
+      await AutoClockOutService.resetGlobalLock();
       await _startGeofenceMonitoringForClient(_selectedClient);
 
       // ✨ REQUEST NOTIFICATION PERMISSION AND START BACKGROUND TRACKING
@@ -956,6 +949,42 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         );
       } catch (e) {
         debugPrint('⚠️ Error setting initial foreground flag: $e');
+      }
+
+      // ✨ NEW: Check for battery optimization (Android specific)
+      if (Platform.isAndroid) {
+        try {
+          final isOptimized =
+              await Permission.ignoreBatteryOptimizations.isDenied;
+          if (isOptimized && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text(
+                  '💡 Tip: For better background tracking, please disable "Battery Optimization" for BeeWhere in your phone settings.',
+                ),
+                backgroundColor: const Color(0xFF4B39EF),
+                duration: const Duration(seconds: 8),
+                action: SnackBarAction(
+                  label: 'SETTINGS',
+                  textColor: Colors.white,
+                  onPressed: () {
+                    openAppSettings();
+                  },
+                ),
+              ),
+            );
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error checking battery optimization: $e');
+        }
+      }
+
+      // ✨ Update pending sync count after action
+      try {
+        final count = await PendingSyncService.getPendingCount();
+        if (mounted) setState(() => _pendingSyncCount = count);
+      } catch (e) {
+        debugPrint('⚠️ Error updating pending count: $e');
       }
 
       _showSuccessDialog(
@@ -1013,6 +1042,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       deviceId: DeviceInfoHelper.deviceId,
     );
 
+    // ✨ NEW: Always reset the global lock after a clock-out attempt
+    await AutoClockOutService.resetGlobalLock();
+
     if (result['success'] && mounted) {
       if (!isAutomatic) {
         _showSuccessDialog(
@@ -1039,6 +1071,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _activityController.clear();
         _fieldVisibility = {};
       });
+
+      // ✨ Update pending sync count after action
+      try {
+        final count = await PendingSyncService.getPendingCount();
+        if (mounted) setState(() => _pendingSyncCount = count);
+      } catch (e) {
+        debugPrint('⚠️ Error updating pending count: $e');
+      }
     } else {
       // ✨ Check for multi-device conflict
       if (result['multiDeviceConflict'] == true) {
@@ -1455,6 +1495,66 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  void _showLocationDisabledDialog() {
+    _showSafetyDialog(
+      title: 'Location Service Disabled',
+      message:
+          'Location services have been turned off. For accurate attendance tracking, we have automatically clocked you out.',
+      icon: Icons.location_off,
+      color: Colors.orange,
+    );
+  }
+
+  void _showAutoClockOutDialog(double distance) {
+    _showSafetyDialog(
+      title: 'Auto Clock Out',
+      message:
+          'You have moved ${distance.toStringAsFixed(0)}m away from your work location. For your safety and attendance integrity, we have automatically clocked you out.',
+      icon: Icons.location_on,
+      color: Colors.orange,
+    );
+  }
+
+  void _showPermissionRevokedDialog() {
+    _showSafetyDialog(
+      title: 'Location Permission Revoked',
+      message:
+          'Location permissions have been removed. For your safety and attendance integrity, we have automatically clocked you out.',
+      icon: Icons.security,
+      color: Colors.red,
+    );
+  }
+
+  void _showSafetyDialog({
+    required String title,
+    required String message,
+    required IconData icon,
+    required Color color,
+  }) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: Row(
+          children: [
+            Icon(icon, color: color),
+            const SizedBox(width: 10),
+            Expanded(child: Text(title)),
+          ],
+        ),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// ✨ Show dialog for multi-device conflicts with refresh option
   void _showMultiDeviceConflictDialog(String title, String message) {
     if (!mounted) return;
@@ -1684,6 +1784,40 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       ],
                     ),
                   ),
+                  const SizedBox(width: 8),
+
+                  // ✨ NEW: Pending sync badge
+                  if (_pendingSyncCount > 0)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.orange, width: 1.5),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.sync,
+                            color: Colors.orange,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Pending: $_pendingSyncCount',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.orange,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   const SizedBox(width: 16),
                 ],
               ),

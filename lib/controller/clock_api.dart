@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math'; // ✨ NEW
 import 'package:beewhere/controller/api_service.dart';
 import 'package:beewhere/services/logger_service.dart';
 import 'package:beewhere/services/connectivity_service.dart';
@@ -89,19 +90,20 @@ class ClockApi {
             'ClockIn Failed: Status ${response.statusCode}',
             tag: 'ClockApi',
           );
-          
+
           // ✨ Check for multi-device conflict
           final responseBody = response.body.toLowerCase();
-          if (responseBody.contains('fail to create resource') || 
+          if (responseBody.contains('fail to create resource') ||
               responseBody.contains('resource') ||
               response.statusCode == 409) {
             return {
               "success": false,
               "multiDeviceConflict": true,
-              "message": "You have already clocked in on another device. Please refresh the page to see the latest status.",
+              "message":
+                  "You have already clocked in on another device. Please refresh the page to see the latest status.",
             };
           }
-          
+
           return {
             "success": false,
             "message": "Clock in failed: ${response.body}",
@@ -109,8 +111,13 @@ class ClockApi {
         }
       } else {
         // OFFLINE: Queue for later sync
-        final tempGuid = 'temp_${DateTime.now().millisecondsSinceEpoch}';
+        final randomSuffix = Random().nextInt(9999).toString().padLeft(4, '0');
+        final tempGuid =
+            'temp_${DateTime.now().millisecondsSinceEpoch}_$randomSuffix';
         final tempClockTime = DateTime.now().toIso8601String();
+
+        // ✨ Add tempGuid to body so SyncService can track it correctly
+        body['_tempGuid'] = tempGuid;
 
         await PendingSyncService.addPendingAction(
           actionType: 'clock_in',
@@ -152,13 +159,16 @@ class ClockApi {
 
       // On error, try to queue offline
       try {
-        final tempGuid = 'temp_${DateTime.now().millisecondsSinceEpoch}';
+        final randomSuffix = Random().nextInt(9999).toString().padLeft(4, '0');
+        final tempGuid =
+            'temp_${DateTime.now().millisecondsSinceEpoch}_$randomSuffix';
         final tempClockTime = DateTime.now().toIso8601String();
         final clockTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
 
         await PendingSyncService.addPendingAction(
           actionType: 'clock_in',
           payload: {
+            "_tempGuid": tempGuid, // ✨ Store for SyncService tracking
             "userGuid": userGuid,
             "clockTime": clockTime,
             "clockType": 0,
@@ -273,19 +283,20 @@ class ClockApi {
             'ClockOut Failed: Status ${response.statusCode}',
             tag: 'ClockApi',
           );
-          
+
           // ✨ Check for multi-device conflict
           final responseBody = response.body.toLowerCase();
-          if (responseBody.contains('fail to create resource') || 
+          if (responseBody.contains('fail to create resource') ||
               responseBody.contains('resource') ||
               response.statusCode == 409) {
             return {
               "success": false,
               "multiDeviceConflict": true,
-              "message": "You have already clocked out on another device. Please refresh the page to see the latest status.",
+              "message":
+                  "You have already clocked out on another device. Please refresh the page to see the latest status.",
             };
           }
-          
+
           return {
             "success": false,
             "message": "Clock out failed: ${response.body}",
@@ -457,7 +468,7 @@ class ClockApi {
           '📱 Device is offline, loading from cache',
           tag: 'ClockApi',
         );
-        
+
         final cachedStatus = await OfflineDatabase.getClockStatus();
         if (cachedStatus != null) {
           LoggerService.info(

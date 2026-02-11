@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'package:beewhere/controller/geofence_helper.dart';
 import 'package:beewhere/config/geofence_config.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
 
 /// Callback when user leaves the geofence area
@@ -13,6 +14,22 @@ class AutoClockOutService {
       StreamController<Map<String, dynamic>>.broadcast();
 
   bool _isMonitoring = false;
+
+  // ✨ Unique Session ID to detect "ghost" timers from previous monitoring sessions
+  String? _sessionGuid;
+
+  // ✨ Global Cross-Isolate Lock Key
+  static const String _globalLockKey = 'is_currently_clocking_out';
+
+  /// Reset the global lock (call this on successful clock-in or manual clock-out)
+  static Future<void> resetGlobalLock() async {
+    try {
+      await FlutterForegroundTask.saveData(key: _globalLockKey, value: false);
+      debugPrint('🔓 Global native auto clock-out lock reset');
+    } catch (e) {
+      debugPrint('⚠️ Error resetting global lock: $e');
+    }
+  }
 
   // Target location (client/site location)
   double? _targetLat;
@@ -32,7 +49,7 @@ class AutoClockOutService {
   // ✨ GPS drift protection
   int _violationCount = 0;
   int _requiredViolations = GeofenceConfig.requiredViolations;
-  
+
   // ✨ Minimum time before auto clock-out can trigger (prevents immediate trigger)
   DateTime? _monitoringStartTime;
   static const Duration _minimumClockInDuration = Duration(seconds: 30);
@@ -70,8 +87,10 @@ class AutoClockOutService {
     _isMonitoring = true;
     _violationCount = 0; // Reset violation counter
     _monitoringStartTime = DateTime.now(); // ✨ Track when monitoring started
+    _sessionGuid = DateTime.now().millisecondsSinceEpoch
+        .toString(); // ✨ New session ID
 
-    debugPrint('🎯 Started geofence monitoring');
+    debugPrint('🎯 Started geofence monitoring (Session: $_sessionGuid)');
     debugPrint('   Target: $_targetLat, $_targetLng');
     debugPrint('   Radius: ${this.radiusInMeters}m');
     debugPrint('   Check interval: ${checkInterval.inSeconds}s');
@@ -81,40 +100,58 @@ class AutoClockOutService {
     // Start location service monitoring
     _startLocationServiceMonitoring();
 
+    // ✨ Track the session in a local variable for the closure
+    final currentSession = _sessionGuid;
+
     // ✨ NEW: Use Timer.periodic instead of position stream
     // This respects the configured checkInterval (e.g., 3 minutes)
     _checkTimer = Timer.periodic(checkInterval, (timer) async {
-      if (!_isMonitoring) {
+      // ✨ GHOST PROTECTION: If session has changed, cancel this timer immediately
+      if (!_isMonitoring || currentSession != _sessionGuid) {
+        debugPrint(
+          '👻 Ghost timer detected for session $currentSession, canceling.',
+        );
         timer.cancel();
         return;
       }
-      
+
       try {
         // Get current position
         final position = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high,
           timeLimit: const Duration(seconds: 10),
         );
-        
+
         await _checkLocation(position);
       } catch (e) {
         debugPrint('❌ Error getting position: $e');
-        
+
         // Check if error is due to location service being disabled
         final isEnabled = await _checkLocationServiceStatus();
         if (!isEnabled) {
+          // ✨ NEW: Native-level Cross-Isolate Lock Check
+          final isAlreadyProcessing = await FlutterForegroundTask.getData<bool>(
+            key: _globalLockKey,
+          );
+          if (isAlreadyProcessing == true) return;
+
+          await FlutterForegroundTask.saveData(
+            key: _globalLockKey,
+            value: true,
+          );
+
           debugPrint('🚨 Location service disabled (detected via error)');
-          
+
           // Trigger callback
           if (onLeaveGeofence != null) {
             await onLeaveGeofence!(-1.0);
           }
-          
+
           stopMonitoring();
         }
       }
     });
-    
+
     // ✨ Do an immediate first check (don't wait for first interval)
     try {
       final position = await Geolocator.getCurrentPosition(
@@ -134,6 +171,7 @@ class AutoClockOutService {
     _locationServiceCheckTimer?.cancel();
     _locationServiceCheckTimer = null;
     _isMonitoring = false;
+    _sessionGuid = null; // ✨ Invalidate current session
     _targetLat = null;
     _targetLng = null;
     _targetAddress = null;
@@ -183,17 +221,37 @@ class AutoClockOutService {
 
         // Only trigger if consecutive violations exceed threshold
         if (_violationCount >= _requiredViolations) {
+          // ✨ NEW: Native-level Cross-Isolate Lock Check
+          final isAlreadyProcessing = await FlutterForegroundTask.getData<bool>(
+            key: _globalLockKey,
+          );
+
+          if (isAlreadyProcessing == true) {
+            debugPrint(
+              '⚠️ Auto clock-out already being processed NATIVELY, ignoring.',
+            );
+            return;
+          }
+
+          // Secure the lock immediately
+          await FlutterForegroundTask.saveData(
+            key: _globalLockKey,
+            value: true,
+          );
+
           debugPrint(
             '🚨 User CONFIRMED OUTSIDE geofence! Distance: ${distance.toStringAsFixed(2)}m',
           );
 
+          // ✨ CRITICAL: Stop monitoring IMMEDIATELY before triggering callback
+          // This prevents the timer from firing again while the UI is showing a dialog
+          final distanceToReport = distance;
+          stopMonitoring();
+
           // Trigger callback
           if (onLeaveGeofence != null) {
-            await onLeaveGeofence!(distance);
+            await onLeaveGeofence!(distanceToReport);
           }
-
-          // Stop monitoring after triggering
-          stopMonitoring();
         } else {
           debugPrint(
             '⏳ Waiting for confirmation... ($_violationCount/$_requiredViolations)',
@@ -240,33 +298,73 @@ class AutoClockOutService {
     }
   }
 
-  /// Start periodic check for location service status
+  /// Check if location permissions are still granted
+  Future<bool> _checkPermissionStatus() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      return permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always;
+    } catch (e) {
+      debugPrint('❌ Error checking permission status: $e');
+      return false;
+    }
+  }
+
+  /// Start periodic check for location service status and permissions
   Timer? _locationServiceCheckTimer;
 
   void _startLocationServiceMonitoring() {
     // Check every 5 seconds if location service is still enabled
-    _locationServiceCheckTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (timer) async {
-        if (!_isMonitoring) {
-          timer.cancel();
-          return;
+    _locationServiceCheckTimer = Timer.periodic(const Duration(seconds: 5), (
+      timer,
+    ) async {
+      if (!_isMonitoring) {
+        timer.cancel();
+        return;
+      }
+
+      final isEnabled = await _checkLocationServiceStatus();
+      if (!isEnabled) {
+        // ... (lock check and data save)
+        final isAlreadyProcessing = await FlutterForegroundTask.getData<bool>(
+          key: _globalLockKey,
+        );
+        if (isAlreadyProcessing == true) return;
+
+        await FlutterForegroundTask.saveData(key: _globalLockKey, value: true);
+
+        debugPrint('🚨 Location service DISABLED! Triggering auto clock-out');
+
+        // Trigger callback with a special distance value (-1) to indicate location disabled
+        if (onLeaveGeofence != null) {
+          await onLeaveGeofence!(-1.0);
         }
 
-        final isEnabled = await _checkLocationServiceStatus();
-        if (!isEnabled) {
-          debugPrint('🚨 Location service DISABLED! Triggering auto clock-out');
-          
-          // Trigger callback with a special distance value (-1) to indicate location disabled
-          if (onLeaveGeofence != null) {
-            await onLeaveGeofence!(-1.0);
-          }
+        // Stop monitoring
+        stopMonitoring();
+        return;
+      }
 
-          // Stop monitoring
-          stopMonitoring();
+      // ✨ NEW: Periodic Permission Check
+      final isPermissionGranted = await _checkPermissionStatus();
+      if (!isPermissionGranted) {
+        final isAlreadyProcessing = await FlutterForegroundTask.getData<bool>(
+          key: _globalLockKey,
+        );
+        if (isAlreadyProcessing == true) return;
+
+        await FlutterForegroundTask.saveData(key: _globalLockKey, value: true);
+
+        debugPrint('🚨 Location permission REVOKED! Triggering auto clock-out');
+
+        // Trigger callback with a special distance value (-2.0) to indicate permission revoked
+        if (onLeaveGeofence != null) {
+          await onLeaveGeofence!(-2.0);
         }
-      },
-    );
+
+        stopMonitoring();
+      }
+    });
   }
 
   /// Manually check location (for testing or refresh button)

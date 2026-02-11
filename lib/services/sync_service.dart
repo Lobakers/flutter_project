@@ -16,7 +16,7 @@ class SyncService {
   static int _failedCount = 0;
   // Production API (currently active)
   static const String _baseUrl = 'https://amscore.beesuite.app';
-  
+
   // Development API (commented out for testing later)
   // static const String _baseUrl = 'https://devamscore.beesuite.app';
 
@@ -80,10 +80,20 @@ class SyncService {
 
       // Process each pending action
       for (var action in pendingActions) {
+        final actionId = action['id'];
+
+        // ✨ NEW: Exponential Backoff Check
+        if (!_shouldRetry(action)) {
+          LoggerService.info(
+            '⏳ Skipping action $actionId due to exponential backoff (Retry Count: ${action['retry_count']})',
+            tag: 'SyncService',
+          );
+          continue;
+        }
+
         final actionType = action['action_type'];
         final payload =
             action['payload'] as Map<String, dynamic>; // Already decoded
-        final actionId = action['id'];
 
         LoggerService.info(
           '🔄 Syncing action: $actionType (ID: $actionId)',
@@ -108,17 +118,22 @@ class SyncService {
               if (success && result['realGuid'] != null) {
                 final realGuid = result['realGuid'];
 
-                // Update any pending clock-out actions that reference temp GUID
-                await _updatePendingClockOutReferences(
-                  pendingActions: pendingActions,
-                  realGuid: realGuid,
-                );
+                // Update only pending clock-out actions that reference THAT SPECIFIC temp GUID
+                final tempGuid = payload['_tempGuid'] as String?;
+                if (tempGuid != null) {
+                  await _updatePendingClockOutReferences(
+                    pendingActions: pendingActions,
+                    tempGuid: tempGuid, // ✨ Pass specific tempGuid
+                    realGuid: realGuid,
+                  );
+                }
 
                 // ✨ CRITICAL FIX: Update StorageService clock-in state with real GUID
                 // This ensures background service uses the real GUID if it triggers auto clock-out
                 try {
                   final clockInState = await StorageService.getClockInState();
-                  if (clockInState != null && clockInState['isClockedIn'] == true) {
+                  if (clockInState != null &&
+                      clockInState['isClockedIn'] == true) {
                     // Check if the stored GUID is a temp GUID
                     final storedGuid = clockInState['clockRefGuid'] as String?;
                     if (storedGuid != null && storedGuid.startsWith('temp_')) {
@@ -126,14 +141,15 @@ class SyncService {
                         '🔄 Updating StorageService with real GUID: $realGuid (was: $storedGuid)',
                         tag: 'SyncService',
                       );
-                      
+
                       await StorageService.saveClockInState(
                         isClockedIn: true,
                         clockRefGuid: realGuid, // ✨ Update with real GUID
                         targetLat: clockInState['targetLat'] as double?,
                         targetLng: clockInState['targetLng'] as double?,
                         targetAddress: clockInState['targetAddress'] as String?,
-                        radiusInMeters: clockInState['radiusInMeters'] as double?,
+                        radiusInMeters:
+                            clockInState['radiusInMeters'] as double?,
                         jobType: clockInState['jobType'] as String?,
                         clientId: clockInState['clientId'] as String?,
                         projectId: clockInState['projectId'] as String?,
@@ -148,23 +164,25 @@ class SyncService {
                     error: e,
                   );
                 }
-                
+
                 // ✨ ALSO UPDATE OfflineDatabase cache with real GUID
                 // This ensures UI shows correct GUID after sync
                 try {
                   final cachedStatus = await OfflineDatabase.getClockStatus();
-                  if (cachedStatus != null && cachedStatus['isClockedIn'] == true) {
+                  if (cachedStatus != null &&
+                      cachedStatus['isClockedIn'] == true) {
                     final cachedGuid = cachedStatus['clockLogGuid'] as String?;
                     if (cachedGuid != null && cachedGuid.startsWith('temp_')) {
                       LoggerService.info(
                         '🔄 Updating OfflineDatabase with real GUID: $realGuid (was: $cachedGuid)',
                         tag: 'SyncService',
                       );
-                      
+
                       await OfflineDatabase.saveClockStatus({
                         'isClockedIn': true,
                         'clockLogGuid': realGuid, // ✨ Update with real GUID
-                        'clockTime': result['clockTime'], // Use real clock time from API
+                        'clockTime':
+                            result['clockTime'], // Use real clock time from API
                         'jobType': cachedStatus['jobType'],
                         'address': cachedStatus['address'],
                         'clientId': cachedStatus['clientId'],
@@ -181,7 +199,7 @@ class SyncService {
                     error: e,
                   );
                 }
-                
+
                 // ✨ FIX: Add small delay to ensure clock-in is fully committed to database
                 // before clock-out starts. This prevents race condition where clock-out
                 // gets inserted before clock-in due to parallel API calls.
@@ -279,6 +297,10 @@ class SyncService {
         tag: 'SyncService',
       );
 
+      // ✨ REMOVE internal tracking fields before sending to API
+      final apiPayload = Map<String, dynamic>.from(payload);
+      apiPayload.remove('_tempGuid');
+
       final response = await http.post(
         Uri.parse('$_baseUrl/api/clock/transaction'),
         headers: {
@@ -287,17 +309,17 @@ class SyncService {
           'Authorization': 'JWT $token',
         },
         body: jsonEncode({
-          "userGuid": payload['userGuid'],
+          "userGuid": apiPayload['userGuid'],
           "clockTime": clockTime, // ✨ FIX: Use original offline timestamp
           "clockType": 0,
           "sourceID": 1,
-          "jobType": payload['jobType'],
-          "location": payload['location'],
-          "clientId": payload['clientId'] ?? "",
-          "projectGuid": payload['projectGuid'] ?? "",
-          "contractId": payload['contractId'] ?? "",
-          "userAgent": payload['userAgent'],
-          "activity": payload['activity'],
+          "jobType": apiPayload['jobType'],
+          "location": apiPayload['location'],
+          "clientId": apiPayload['clientId'] ?? "",
+          "projectGuid": apiPayload['projectGuid'] ?? "",
+          "contractId": apiPayload['contractId'] ?? "",
+          "userAgent": apiPayload['userAgent'],
+          "activity": apiPayload['activity'],
         }),
       );
 
@@ -378,9 +400,9 @@ class SyncService {
       } else {
         // ✨ Check if this is an orphaned clock-out (referencing non-existent GUID)
         final responseBody = response.body.toLowerCase();
-        if (response.statusCode == 400 && 
-            (responseBody.contains('fail to create resource') || 
-             responseBody.contains('resource'))) {
+        if (response.statusCode == 400 &&
+            (responseBody.contains('fail to create resource') ||
+                responseBody.contains('resource'))) {
           LoggerService.warning(
             '⚠️ Clock-out references non-existent GUID (orphaned record). This will be removed from queue.',
             tag: 'SyncService',
@@ -388,7 +410,7 @@ class SyncService {
           // Return true to remove it from queue (it's an orphaned record that can't be synced)
           return true;
         }
-        
+
         LoggerService.error(
           'Clock out sync failed: ${response.statusCode} - ${response.body}',
           tag: 'SyncService',
@@ -639,6 +661,7 @@ class SyncService {
   /// This scans all pending actions and replaces references
   static Future<void> _updatePendingClockOutReferences({
     required List<Map<String, dynamic>> pendingActions,
+    required String tempGuid,
     required String realGuid,
   }) async {
     try {
@@ -651,7 +674,7 @@ class SyncService {
         // 1. Check clockRefGuid (used in clock_out)
         if (payload.containsKey('clockRefGuid')) {
           final ref = payload['clockRefGuid'];
-          if (ref != null && ref.toString().startsWith('temp_')) {
+          if (ref != null && ref.toString() == tempGuid) {
             payload['clockRefGuid'] = realGuid;
             updated = true;
           }
@@ -660,7 +683,7 @@ class SyncService {
         // 2. Check clockLogGuid (used in update_activity)
         if (payload.containsKey('clockLogGuid')) {
           final ref = payload['clockLogGuid'];
-          if (ref != null && ref.toString().startsWith('temp_')) {
+          if (ref != null && ref.toString() == tempGuid) {
             payload['clockLogGuid'] = realGuid;
             updated = true;
           }
@@ -683,6 +706,41 @@ class SyncService {
         tag: 'SyncService',
         error: e,
       );
+    }
+  }
+
+  /// ✨ Calculate if an action is ready for retry based on exponential backoff
+  static bool _shouldRetry(Map<String, dynamic> action) {
+    final retryCount = action['retry_count'] as int? ?? 0;
+    if (retryCount == 0) return true;
+
+    final lastRetryAtString = action['last_retry_at'] as String?;
+    if (lastRetryAtString == null) return true;
+
+    try {
+      final lastRetryAt = DateTime.parse(lastRetryAtString);
+      final now = DateTime.now();
+
+      // Exponential backoff: (2^(retryCount-1)) * 30 seconds
+      // 1st retry: 0 seconds after failure (already failed once)
+      // 2nd retry: 2^0 * 30 = 30 seconds
+      // 3rd retry: 2^1 * 30 = 60 seconds
+      // 4th retry: 2^2 * 30 = 120 seconds
+      // 5th retry: 2^3 * 30 = 240 seconds
+      // Cap at 1 hour (3600 seconds)
+      final delayInSeconds = (1 << (retryCount - 1)) * 30;
+      final cappedDelay = delayInSeconds > 3600 ? 3600 : delayInSeconds;
+
+      final nextRetryAt = lastRetryAt.add(Duration(seconds: cappedDelay));
+
+      return now.isAfter(nextRetryAt);
+    } catch (e) {
+      LoggerService.error(
+        'Error calculating backoff',
+        tag: 'SyncService',
+        error: e,
+      );
+      return true; // If parsing fails, allow retry to avoid stuck actions
     }
   }
 }

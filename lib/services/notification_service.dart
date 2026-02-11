@@ -111,27 +111,43 @@ class NotificationService {
     }
 
     try {
-      // Determine notification message based on reason
-      String message;
+      // \u2728 Determine notification details based on reason
+      String title = 'Auto Clock Out';
+      String message = 'You are being automatically clocked out.';
+      Color notificationColor = const Color(0xFF4B39EF); // Default purple
+
       if (reason == 'location_disabled') {
-        message = 'Location service was disabled. You have been automatically clocked out.';
+        title = 'Location Service Disabled';
+        message =
+            'Location service was disabled. You have been automatically clocked out.';
+        notificationColor = Colors.orange;
+      } else if (reason == 'queue_failed') {
+        title = 'Auto Clock-Out FAILED';
+        message =
+            'CRITICAL: Failed to queue clock-out. Please clock out manually as soon as possible to avoid incorrect hours.';
+        notificationColor = Colors.red;
       } else {
-        message = 'You moved ${distance.toStringAsFixed(0)}m from $location. You are being automatically clocked out.';
+        // Standard proximity clock-out
+        title = 'Auto Clock Out';
+        message =
+            'You moved ${distance.toStringAsFixed(0)}m from $location. You are being automatically clocked out.';
+        notificationColor =
+            Colors.orange; // Proximity triggers are orange per requirements
       }
 
-      final AndroidNotificationDetails
-      androidDetails = AndroidNotificationDetails(
-        'auto_clockout_channel',
-        'Auto Clock Out',
-        channelDescription: 'Notifications for automatic clock out events',
-        importance: Importance.max, // Changed to max
-        priority: Priority.high,
-        playSound: true,
-        enableVibration: true,
-        icon: '@mipmap/ic_launcher',
-        color: const Color(0xFF4B39EF),
-        styleInformation: BigTextStyleInformation(message),
-      );
+      final AndroidNotificationDetails androidDetails =
+          AndroidNotificationDetails(
+            'auto_clockout_channel',
+            'Auto Clock Out',
+            channelDescription: 'Notifications for automatic clock out events',
+            importance: Importance.max,
+            priority: Priority.high,
+            playSound: true,
+            enableVibration: true,
+            icon: '@mipmap/ic_launcher',
+            color: notificationColor,
+            styleInformation: BigTextStyleInformation(message),
+          );
 
       const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
         presentAlert: true,
@@ -145,15 +161,19 @@ class NotificationService {
       );
 
       await _notifications.show(
-        999, // Changed ID to avoid conflicts
-        'Auto Clock Out',
-        'You are being automatically clocked out.',
+        999,
+        title,
+        message,
         details,
         payload: 'auto_clockout',
       );
-      print('🔔 [NotificationService] Notification shown successfully');
+      print(
+        '\uD83D\uDD14 [NotificationService] Notification shown successfully: $title',
+      );
     } catch (e) {
-      print('🔔 ❌ [NotificationService] Failed to show notification: $e');
+      print(
+        '\uD83D\uDD14 \u274C [NotificationService] Failed to show notification: $e',
+      );
     }
   }
 

@@ -30,7 +30,8 @@ class PendingSyncService {
               payload TEXT NOT NULL,
               created_at TEXT NOT NULL,
               retry_count INTEGER DEFAULT 0,
-              last_error TEXT
+              last_error TEXT,
+              last_retry_at TEXT
             )
           ''');
 
@@ -48,15 +49,24 @@ class PendingSyncService {
     }
   }
 
+  /// ✨ Auto-healing database getter
+  static Future<Database> _getDb() async {
+    if (_database == null || !_database!.isOpen) {
+      _isInitialized = false;
+      await init();
+    }
+    return _database!;
+  }
+
   /// Add a pending action to the queue
   static Future<void> addPendingAction({
     required String actionType,
     required Map<String, dynamic> payload,
   }) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      await _database!.insert('pending_sync', {
+      await db.insert('pending_sync', {
         'action_type': actionType,
         'payload': jsonEncode(payload),
         'created_at': DateTime.now().toIso8601String(),
@@ -71,13 +81,10 @@ class PendingSyncService {
 
   /// Get all pending actions
   static Future<List<Map<String, dynamic>>> getPendingActions() async {
-    if (_database == null) return [];
+    final db = await _getDb();
 
     try {
-      final results = await _database!.query(
-        'pending_sync',
-        orderBy: 'created_at ASC',
-      );
+      final results = await db.query('pending_sync', orderBy: 'created_at ASC');
 
       return results.map((row) {
         return {
@@ -97,10 +104,10 @@ class PendingSyncService {
 
   /// Get count of pending actions
   static Future<int> getPendingCount() async {
-    if (_database == null) return 0;
+    final db = await _getDb();
 
     try {
-      final result = await _database!.rawQuery(
+      final result = await db.rawQuery(
         'SELECT COUNT(*) as count FROM pending_sync',
       );
       return Sqflite.firstIntValue(result) ?? 0;
@@ -112,10 +119,10 @@ class PendingSyncService {
 
   /// Remove a pending action after successful sync
   static Future<void> removePendingAction(int id) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      await _database!.delete('pending_sync', where: 'id = ?', whereArgs: [id]);
+      await db.delete('pending_sync', where: 'id = ?', whereArgs: [id]);
 
       debugPrint('✅ Removed pending action: $id');
     } catch (e) {
@@ -125,15 +132,16 @@ class PendingSyncService {
 
   /// Increment retry count for a failed sync
   static Future<void> incrementRetry(int id, String error) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      await _database!.rawUpdate(
-        'UPDATE pending_sync SET retry_count = retry_count + 1, last_error = ? WHERE id = ?',
-        [error, id],
+      final now = DateTime.now().toIso8601String();
+      await db.rawUpdate(
+        'UPDATE pending_sync SET retry_count = retry_count + 1, last_error = ?, last_retry_at = ? WHERE id = ?',
+        [error, now, id],
       );
 
-      debugPrint('⚠️ Incremented retry count for action: $id');
+      debugPrint('⚠️ Incremented retry count for action: $id at $now');
     } catch (e) {
       debugPrint('❌ Failed to increment retry: $e');
     }
@@ -144,10 +152,10 @@ class PendingSyncService {
     required int actionId,
     required Map<String, dynamic> payload,
   }) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      await _database!.update(
+      await db.update(
         'pending_sync',
         {'payload': jsonEncode(payload)},
         where: 'id = ?',
@@ -162,10 +170,10 @@ class PendingSyncService {
 
   /// Clear all pending actions (use with caution)
   static Future<void> clearAll() async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      await _database!.delete('pending_sync');
+      await db.delete('pending_sync');
       debugPrint('✅ Cleared all pending actions');
     } catch (e) {
       debugPrint('❌ Failed to clear pending actions: $e');

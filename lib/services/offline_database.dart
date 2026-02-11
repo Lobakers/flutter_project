@@ -19,6 +19,25 @@ class OfflineDatabase {
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String dbPath = join(appDocDir.path, 'beewhere_offline.db');
 
+      // ✨ NEW: Integrity Check on initialization
+      final dbExists = await databaseExists(dbPath);
+      if (dbExists) {
+        final checkDb = await openDatabase(dbPath);
+        final List<Map<String, dynamic>> integrity = await checkDb.rawQuery(
+          'PRAGMA integrity_check',
+        );
+        await checkDb.close();
+
+        if (integrity.isNotEmpty &&
+            integrity.first['integrity_check'] != 'ok') {
+          debugPrint('❌ Database integrity check FAILED: $integrity');
+          debugPrint('🧹 Attempting safe recovery by deleting corrupted DB');
+          await deleteDatabase(dbPath);
+        } else {
+          debugPrint('✅ Database integrity check passed');
+        }
+      }
+
       _database = await openDatabase(
         dbPath,
         version: 1,
@@ -136,37 +155,47 @@ class OfflineDatabase {
     }
   }
 
+  /// ✨ Auto-healing database getter
+  /// Re-initializes if database is null or closed
+  static Future<Database> _getDb() async {
+    if (_database == null || !_database!.isOpen) {
+      _isInitialized = false;
+      await init();
+    }
+    return _database!;
+  }
+
   // ==================== ATTENDANCE HISTORY ====================
 
   /// Save attendance history records from API
   static Future<void> saveAttendanceHistory(List<dynamic> records) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      final batch = _database!.batch();
       final now = DateTime.now().toIso8601String();
 
-      for (var record in records) {
-        final activities = record['ACTIVITY'] != null
-            ? jsonEncode(record['ACTIVITY'])
-            : null;
+      await db.transaction((txn) async {
+        for (var record in records) {
+          final activities = record['ACTIVITY'] != null
+              ? jsonEncode(record['ACTIVITY'])
+              : null;
 
-        batch.insert('attendance_history', {
-          'clock_log_guid': record['CLOCK_LOG_GUID'],
-          'clock_in_time': record['CLOCK_IN_TIME'],
-          'clock_out_time': record['CLOCK_OUT_TIME'],
-          'job_type': record['JOB_TYPE'],
-          'client_name': record['CLIENT_NAME'],
-          'address_in': record['ADDRESS_IN'],
-          'address_out': record['ADDRESS_OUT'],
-          'activities': activities,
-          'synced': 1,
-          'created_at': now,
-          'updated_at': now,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
+          await txn.insert('attendance_history', {
+            'clock_log_guid': record['CLOCK_LOG_GUID'],
+            'clock_in_time': record['CLOCK_IN_TIME'],
+            'clock_out_time': record['CLOCK_OUT_TIME'],
+            'job_type': record['JOB_TYPE'],
+            'client_name': record['CLIENT_NAME'],
+            'address_in': record['ADDRESS_IN'],
+            'address_out': record['ADDRESS_OUT'],
+            'activities': activities,
+            'synced': 1,
+            'created_at': now,
+            'updated_at': now,
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+      });
 
-      await batch.commit(noResult: true);
       debugPrint('✅ Saved ${records.length} attendance records to offline DB');
     } catch (e) {
       debugPrint('❌ Failed to save attendance history: $e');
@@ -177,10 +206,10 @@ class OfflineDatabase {
   static Future<List<Map<String, dynamic>>> getAttendanceHistory({
     int limit = 100,
   }) async {
-    if (_database == null) return [];
+    final db = await _getDb();
 
     try {
-      final results = await _database!.query(
+      final results = await db.query(
         'attendance_history',
         orderBy: 'created_at DESC',
         limit: limit,
@@ -215,17 +244,16 @@ class OfflineDatabase {
 
   /// Save latest clock status
   static Future<void> saveClockStatus(Map<String, dynamic> status) async {
-    if (_database == null) {
-      debugPrint('⚠️ OfflineDatabase not initialized, cannot save clock status');
-      return;
-    }
+    final db = await _getDb();
 
     try {
       final isClockedIn = status['isClockedIn'] == true ? 1 : 0;
-      
-      debugPrint('💾 Saving clock status to offline DB: isClockedIn=$isClockedIn, clockLogGuid=${status['clockLogGuid']}');
-      
-      await _database!.insert('clock_status', {
+
+      debugPrint(
+        '💾 Saving clock status to offline DB: isClockedIn=$isClockedIn, clockLogGuid=${status['clockLogGuid']}',
+      );
+
+      await db.insert('clock_status', {
         'id': 1,
         'is_clocked_in': isClockedIn,
         'clock_log_guid': status['clockLogGuid'],
@@ -238,7 +266,7 @@ class OfflineDatabase {
         'activity_name': status['activityName'],
         'updated_at': DateTime.now().toIso8601String(),
       }, conflictAlgorithm: ConflictAlgorithm.replace);
-      
+
       debugPrint('✅ Clock status saved successfully to offline DB');
     } catch (e) {
       debugPrint('❌ Failed to save clock status: $e');
@@ -247,13 +275,10 @@ class OfflineDatabase {
 
   /// Get cached clock status
   static Future<Map<String, dynamic>?> getClockStatus() async {
-    if (_database == null) {
-      debugPrint('⚠️ OfflineDatabase not initialized');
-      return null;
-    }
+    final db = await _getDb();
 
     try {
-      final results = await _database!.query(
+      final results = await db.query(
         'clock_status',
         where: 'id = ?',
         whereArgs: [1],
@@ -266,9 +291,11 @@ class OfflineDatabase {
 
       final row = results.first;
       final isClockedIn = row['is_clocked_in'] == 1;
-      
-      debugPrint('📱 Reading clock status from cache: isClockedIn=$isClockedIn, clockLogGuid=${row['clock_log_guid']}');
-      
+
+      debugPrint(
+        '📱 Reading clock status from cache: isClockedIn=$isClockedIn, clockLogGuid=${row['clock_log_guid']}',
+      );
+
       return {
         'success': true,
         'isClockedIn': isClockedIn,
@@ -291,10 +318,10 @@ class OfflineDatabase {
 
   /// Save clients list
   static Future<void> saveClients(List<dynamic> clients) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      final batch = _database!.batch();
+      final batch = db.batch();
       final now = DateTime.now().toIso8601String();
 
       for (var client in clients) {
@@ -316,10 +343,10 @@ class OfflineDatabase {
 
   /// Get cached clients
   static Future<List<dynamic>> getClients() async {
-    if (_database == null) return [];
+    final db = await _getDb();
 
     try {
-      final results = await _database!.query('clients');
+      final results = await db.query('clients');
 
       return results.map((row) {
         return {
@@ -339,10 +366,10 @@ class OfflineDatabase {
 
   /// Save projects list
   static Future<void> saveProjects(List<dynamic> projects) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      final batch = _database!.batch();
+      final batch = db.batch();
       final now = DateTime.now().toIso8601String();
 
       for (var project in projects) {
@@ -363,10 +390,10 @@ class OfflineDatabase {
 
   /// Get cached projects
   static Future<List<dynamic>> getProjects() async {
-    if (_database == null) return [];
+    final db = await _getDb();
 
     try {
-      final results = await _database!.query('projects');
+      final results = await db.query('projects');
       return results.map((row) => jsonDecode(row['data'] as String)).toList();
     } catch (e) {
       debugPrint('❌ Failed to get projects: $e');
@@ -378,10 +405,10 @@ class OfflineDatabase {
 
   /// Save contracts list
   static Future<void> saveContracts(List<dynamic> contracts) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      final batch = _database!.batch();
+      final batch = db.batch();
       final now = DateTime.now().toIso8601String();
 
       for (var contract in contracts) {
@@ -402,10 +429,10 @@ class OfflineDatabase {
 
   /// Get cached contracts
   static Future<List<dynamic>> getContracts() async {
-    if (_database == null) return [];
+    final db = await _getDb();
 
     try {
-      final results = await _database!.query('contracts');
+      final results = await db.query('contracts');
       return results.map((row) => jsonDecode(row['data'] as String)).toList();
     } catch (e) {
       debugPrint('❌ Failed to get contracts: $e');
@@ -419,10 +446,10 @@ class OfflineDatabase {
   static Future<void> saveAttendanceProfile(
     Map<String, dynamic> profile,
   ) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      await _database!.insert('attendance_profile', {
+      await db.insert('attendance_profile', {
         'id': 1,
         'profile_data': jsonEncode(profile),
         'updated_at': DateTime.now().toIso8601String(),
@@ -435,10 +462,10 @@ class OfflineDatabase {
 
   /// Get cached attendance profile
   static Future<Map<String, dynamic>?> getAttendanceProfile() async {
-    if (_database == null) return null;
+    final db = await _getDb();
 
     try {
-      final results = await _database!.query(
+      final results = await db.query(
         'attendance_profile',
         where: 'id = ?',
         whereArgs: [1],
@@ -462,10 +489,10 @@ class OfflineDatabase {
     required int endTimestamp,
     required dynamic data,
   }) async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
-      await _database!.insert('report_data', {
+      await db.insert('report_data', {
         'report_type': reportType,
         'start_timestamp': startTimestamp,
         'end_timestamp': endTimestamp,
@@ -484,10 +511,10 @@ class OfflineDatabase {
     required int startTimestamp,
     required int endTimestamp,
   }) async {
-    if (_database == null) return null;
+    final db = await _getDb();
 
     try {
-      final results = await _database!.query(
+      final results = await db.query(
         'report_data',
         where: 'report_type = ? AND start_timestamp = ? AND end_timestamp = ?',
         whereArgs: [reportType, startTimestamp, endTimestamp],
@@ -508,7 +535,7 @@ class OfflineDatabase {
 
   /// Clear old data (keep last 30 days)
   static Future<void> clearOldData() async {
-    if (_database == null) return;
+    final db = await _getDb();
 
     try {
       final cutoffDate = DateTime.now()
@@ -516,14 +543,14 @@ class OfflineDatabase {
           .toIso8601String();
 
       // Clear old attendance history
-      await _database!.delete(
+      await db.delete(
         'attendance_history',
         where: 'created_at < ?',
         whereArgs: [cutoffDate],
       );
 
       // Clear old report data
-      await _database!.delete(
+      await db.delete(
         'report_data',
         where: 'created_at < ?',
         whereArgs: [cutoffDate],

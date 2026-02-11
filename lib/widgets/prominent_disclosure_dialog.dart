@@ -90,6 +90,16 @@ class ProminentDisclosureDialog extends StatelessWidget {
                       _buildBulletPoint(
                         'Ensure accurate attendance tracking even when the app is not in use',
                       ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Note for iOS: Choose "Allow While Using App" first, and then select "Change to Always Allow" when prompted by the system to enable background monitoring.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white70,
+                          fontStyle: FontStyle.italic,
+                          height: 1.4,
+                        ),
+                      ),
                       const SizedBox(height: 16),
                       const Text(
                         'Your location data is:',
