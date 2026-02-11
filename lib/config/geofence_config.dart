@@ -20,18 +20,15 @@ class GeofenceConfig {
 
   // ==================== TIMING CONSTANTS ====================
 
-  static const Duration autoClockOutCheckInterval = Duration(
-    seconds: 15,
-  ); //dev (reduced from 3min)
-  // static const Duration autoClockOutCheckInterval = Duration(minutes: 3); //prod
+  //static const Duration autoClockOutCheckInterval = Duration(seconds: 15,); //dev (reduced from 3min)
+  static const Duration autoClockOutCheckInterval = Duration(minutes: 3); //prod
 
   /// Background Geofence Check Interval
   /// How often to check location when app is in background
   /// Default: 30 seconds (longer to save battery)
-  static const Duration backgroundCheckInterval = Duration(
-    seconds: 15,
-  ); //dev (reduced from 3min)
-  // static const Duration backgroundCheckInterval = Duration(minutes: 3); //prod
+  ///
+  //static const Duration backgroundCheckInterval = Duration(seconds: 15,); //dev (reduced from 3min)
+  static const Duration backgroundCheckInterval = Duration(minutes: 3); //prod
 
   /// Required Violation Count
   /// Number of consecutive violations before triggering auto clock-out
