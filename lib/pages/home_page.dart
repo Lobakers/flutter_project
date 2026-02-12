@@ -29,6 +29,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
+import 'package:beewhere/widgets/searchable_selection_sheet.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -38,7 +39,6 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
-  Timer? _locationAutoRefreshTimer; // Timer for auto location refresh
   // Location state
   String _currentAddress = "Tap to get location"; // Now stores coordinates
   bool _isLoading = false;
@@ -118,7 +118,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     _initializeData();
     _startTimers();
-    _startLocationAutoRefresh();
+    _startLocationStream(); // ✨ Start real-time stream
     _initConnectivityListener();
 
     // ✨ Request background location permission on startup
@@ -137,6 +137,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     if (state == AppLifecycleState.resumed) {
       debugPrint('📱 App resumed, refreshing clock status');
+
+      // ✨ Resume stream if needed
+      if (_positionStreamSubscription == null ||
+          _positionStreamSubscription!.isPaused) {
+        _startLocationStream();
+      }
 
       // ✨ Tell background service that app is in foreground
       try {
@@ -186,21 +192,53 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _timer?.cancel();
-    _locationAutoRefreshTimer?.cancel();
+    _positionStreamSubscription?.cancel(); // ✨ Cancel stream
     _activityController.dispose();
     _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
     _connectivitySubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this); // ✨ Remove lifecycle observer
+
     super.dispose();
   }
 
+  StreamSubscription<Position>?
+  _positionStreamSubscription; // ✨ Stream for real-time location
+
   // start auto location refresh
-  void _startLocationAutoRefresh() {
-    _locationAutoRefreshTimer = Timer.periodic(const Duration(minutes: 3), (_) {
-      if (mounted && !_isLoading) {
-        _getCurrentPosition(); // ✨ Just call your existing method
-      }
-    });
+  void _startLocationStream() {
+    // Cancel existing stream if any
+    _positionStreamSubscription?.cancel();
+
+    // ✨ Subscribe to location updates
+    // detailed configuration for "Waze-like" updates
+    const locationSettings = LocationSettings(
+      accuracy: LocationAccuracy.high, // Good accuracy
+      distanceFilter: 5, // Update every 5 meters moved
+    );
+
+    _positionStreamSubscription =
+        Geolocator.getPositionStream(locationSettings: locationSettings).listen(
+          (Position position) {
+            if (mounted) {
+              setState(() {
+                _isLoading = false;
+                _latitude = position.latitude;
+                _longitude = position.longitude;
+                // Update address string
+                _currentAddress =
+                    '${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}';
+              });
+
+              // 🧪 DEBUG: Print your real lat/long
+              // debugPrint(
+              //   '📍 Stream Location: ${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}',
+              // );
+            }
+          },
+          onError: (e) {
+            debugPrint('Location stream error: $e');
+          },
+        );
   }
 
   // ✨ Flag to prevent multiple simultaneous auto clock-out calls
@@ -2273,11 +2311,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     String labelKey,
     Function(String?) onChanged,
   ) {
-    if (_loadingDropdowns)
+    if (_loadingDropdowns) {
       return const Padding(
         padding: EdgeInsets.all(10),
         child: CircularProgressIndicator(),
       );
+    }
 
     // Show helpful message when no clients are nearby
     if (label == 'Client' && items.isEmpty) {
@@ -2329,41 +2368,83 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
     }
 
-    // ✨ FIX: Validate that value exists in items list
-    // If the value is not in the list, set it to null to prevent dropdown errors
-    String? validatedValue = value;
+    // Find selected item label
+    String displayValue = 'Select $label';
     if (value != null) {
-      final valueExists = items.any((item) => item[valueKey] == value);
-      if (!valueExists) {
-        debugPrint(
-          '⚠️ Dropdown value $value not found in items, setting to null',
-        );
-        validatedValue = null;
+      final selectedItem = items.firstWhere(
+        (item) => item[valueKey] == value,
+        orElse: () => null,
+      );
+      if (selectedItem != null) {
+        displayValue = selectedItem[labelKey] ?? '';
       }
     }
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 15),
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey),
-      ),
-      child: DropdownButton<String>(
-        isExpanded: true,
-        underline: const SizedBox(),
-        hint: Text('Select $label'),
-        value: validatedValue,
-        items: items
-            .map(
-              (item) => DropdownMenuItem<String>(
-                value: item[valueKey],
-                child: Text(item[labelKey] ?? ''),
+    return GestureDetector(
+      onTap: _isClockedIn
+          ? null
+          : () => _showSelectionSheet(
+              label,
+              items,
+              value,
+              valueKey,
+              labelKey,
+              onChanged,
+            ),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 15),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey),
+          color: _isClockedIn ? Colors.grey.shade200 : Colors.white,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                displayValue,
+                style: TextStyle(
+                  fontSize: 16,
+                  color: value == null ? Colors.grey.shade600 : Colors.black87,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
-            )
-            .toList(),
-        onChanged: _isClockedIn ? null : onChanged,
+            ),
+            Icon(Icons.arrow_drop_down, color: Colors.grey.shade600),
+          ],
+        ),
       ),
+    );
+  }
+
+  // ✨ NEW: Searchable Bottom Sheet
+  void _showSelectionSheet(
+    String label,
+    List<dynamic> items,
+    String? currentValue,
+    String valueKey,
+    String labelKey,
+    Function(String?) onChanged,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return SearchableSelectionSheet(
+          label: label,
+          items: items,
+          selectedValue: currentValue,
+          valueKey: valueKey,
+          labelKey: labelKey,
+          onSelected: (value) {
+            onChanged(value);
+            Navigator.pop(context); // Close the sheet
+          },
+        );
+      },
     );
   }
 

@@ -3,7 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
 
-class LocationMapWidget extends StatelessWidget {
+class LocationMapWidget extends StatefulWidget {
   final double latitude;
   final double longitude;
   final double height;
@@ -24,29 +24,104 @@ class LocationMapWidget extends StatelessWidget {
   });
 
   @override
+  State<LocationMapWidget> createState() => _LocationMapWidgetState();
+}
+
+class _LocationMapWidgetState extends State<LocationMapWidget>
+    with TickerProviderStateMixin {
+  late final MapController _mapController;
+  late final AnimationController _pulseController;
+  bool _isLiveTracking = true; // ✨ Default to tracking mode (Waze-style)
+
+  @override
+  void initState() {
+    super.initState();
+    _mapController = MapController();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _mapController.dispose();
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(LocationMapWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    // ✨ "Waze-mode": If tracking is active, follow the user!
+    if (_isLiveTracking) {
+      // Check if location actually changed to avoid unnecessary moves
+      if (oldWidget.latitude != widget.latitude ||
+          oldWidget.longitude != widget.longitude) {
+        _recenterMap(animate: true, fromUpdate: true);
+      }
+    }
+  }
+
+  void _recenterMap({bool animate = true, bool fromUpdate = false}) {
+    if (!fromUpdate) {
+      // If manually clicked, re-enable tracking
+      setState(() {
+        _isLiveTracking = true;
+      });
+    }
+
+    if (animate) {
+      _mapController.move(LatLng(widget.latitude, widget.longitude), 16.0);
+    } else {
+      _mapController.move(LatLng(widget.latitude, widget.longitude), 16.0);
+    }
+  }
+
+  // ✨ Handle user interaction
+  void _onMapPositionChanged(MapCamera camera, bool hasGesture) {
+    if (hasGesture && _isLiveTracking) {
+      // User touched the map -> Stop following them
+      setState(() {
+        _isLiveTracking = false;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Container(
-      height: height,
+      height: widget.height,
       margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300, width: 2),
+        borderRadius: BorderRadius.circular(16), // Slightly more rounded
+        border: Border.all(
+          color: Colors.white,
+          width: 2,
+        ), // Premium white border
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+            spreadRadius: 2,
           ),
         ],
       ),
       child: Stack(
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(
+              14,
+            ), // Match container minus border
             child: FlutterMap(
+              mapController: _mapController,
               options: MapOptions(
-                initialCenter: LatLng(latitude, longitude),
+                initialCenter: LatLng(widget.latitude, widget.longitude),
                 initialZoom: 16.0,
+                onPositionChanged:
+                    _onMapPositionChanged, // ✨ Listen for gestures
                 interactionOptions: const InteractionOptions(
                   flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
                 ),
@@ -58,28 +133,29 @@ class LocationMapWidget extends StatelessWidget {
                   userAgentPackageName: 'com.yourcompany.beewhere',
                 ),
                 // Radius circle (if provided)
-                if (radiusInMeters != null && radiusInMeters! > 0)
+                if (widget.radiusInMeters != null && widget.radiusInMeters! > 0)
                   CircleLayer(
                     circles: [
                       CircleMarker(
-                        point: LatLng(latitude, longitude),
-                        radius: radiusInMeters!,
+                        point: LatLng(widget.latitude, widget.longitude),
+                        radius: widget.radiusInMeters!,
                         useRadiusInMeter: true,
-                        color: Colors.blue.withOpacity(0.15),
-                        borderColor: Colors.blue.withOpacity(0.5),
-                        borderStrokeWidth: 2,
+                        color: Colors.blue.withOpacity(0.1),
+                        borderColor: Colors.blue.withOpacity(0.3),
+                        borderStrokeWidth: 1,
                       ),
                     ],
                   ),
                 // ✨ Client markers with clustering
-                if (clientMarkers != null && clientMarkers!.isNotEmpty)
+                if (widget.clientMarkers != null &&
+                    widget.clientMarkers!.isNotEmpty)
                   MarkerClusterLayerWidget(
                     options: MarkerClusterLayerOptions(
                       maxClusterRadius: 80, // Distance to group markers
                       size: const Size(50, 50),
-                      markers: clientMarkers!.map((client) {
-                        final isInsideRadius = radiusInMeters != null
-                            ? client.distance <= radiusInMeters!
+                      markers: widget.clientMarkers!.map((client) {
+                        final isInsideRadius = widget.radiusInMeters != null
+                            ? client.distance <= widget.radiusInMeters!
                             : true;
                         final markerColor = isInsideRadius
                             ? Colors.green
@@ -129,12 +205,12 @@ class LocationMapWidget extends StatelessWidget {
                                 const SizedBox(height: 2),
                                 Container(
                                   padding: const EdgeInsets.symmetric(
-                                    horizontal: 4,
+                                    horizontal: 6,
                                     vertical: 2,
                                   ),
                                   decoration: BoxDecoration(
                                     color: Colors.white,
-                                    borderRadius: BorderRadius.circular(4),
+                                    borderRadius: BorderRadius.circular(12),
                                     boxShadow: [
                                       BoxShadow(
                                         color: Colors.black.withOpacity(0.2),
@@ -145,7 +221,7 @@ class LocationMapWidget extends StatelessWidget {
                                   child: Text(
                                     client.abbreviation,
                                     style: TextStyle(
-                                      fontSize: 9,
+                                      fontSize: 10,
                                       fontWeight: FontWeight.bold,
                                       color: markerColor,
                                     ),
@@ -191,11 +267,30 @@ class LocationMapWidget extends StatelessWidget {
                 MarkerLayer(
                   markers: [
                     Marker(
-                      point: LatLng(latitude, longitude),
-                      width: 50,
-                      height: 50,
-                      child: Column(
+                      point: LatLng(widget.latitude, widget.longitude),
+                      width: 60,
+                      height: 60,
+                      child: Stack(
+                        alignment: Alignment.center,
                         children: [
+                          // Pulsing effect
+                          ScaleTransition(
+                            scale: _pulseController.drive(
+                              Tween(
+                                begin: 0.8,
+                                end: 1.2,
+                              ).chain(CurveTween(curve: Curves.easeInOut)),
+                            ),
+                            child: Container(
+                              width: 60,
+                              height: 60,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.blue.withOpacity(0.3),
+                              ),
+                            ),
+                          ),
+                          // Main marker
                           Container(
                             padding: const EdgeInsets.all(4),
                             decoration: BoxDecoration(
@@ -204,15 +299,15 @@ class LocationMapWidget extends StatelessWidget {
                               boxShadow: [
                                 BoxShadow(
                                   color: Colors.black.withOpacity(0.3),
-                                  blurRadius: 4,
-                                  offset: const Offset(0, 2),
+                                  blurRadius: 6,
+                                  offset: const Offset(0, 3),
                                 ),
                               ],
                             ),
                             child: const Icon(
-                              Icons.person_pin_circle,
-                              color: Colors.blue,
-                              size: 32,
+                              Icons.my_location, // Changed icon for variety
+                              color: Colors.blueAccent,
+                              size: 28,
                             ),
                           ),
                         ],
@@ -225,32 +320,36 @@ class LocationMapWidget extends StatelessWidget {
           ),
           // Attribution
           Positioned(
-            bottom: 0,
+            bottom: 30, // Moved up to not be covered by buttons
             right: 0,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.7),
+                color: Colors.white.withOpacity(0.8),
                 borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(4),
+                  topLeft: Radius.circular(8),
+                  bottomLeft: Radius.circular(8),
                 ),
               ),
               child: const Text(
                 '© OpenStreetMap',
-                style: TextStyle(fontSize: 8, color: Colors.black54),
+                style: TextStyle(fontSize: 9, color: Colors.black87),
               ),
             ),
           ),
           // Radius info indicator
-          if (radiusInMeters != null && radiusInMeters! > 0)
+          if (widget.radiusInMeters != null && widget.radiusInMeters! > 0)
             Positioned(
-              top: 10,
-              left: 10,
+              top: 12,
+              left: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
-                  color: Colors.blue,
-                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.blue.shade600,
+                  borderRadius: BorderRadius.circular(20),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withOpacity(0.2),
@@ -262,14 +361,14 @@ class LocationMapWidget extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.radar, color: Colors.white, size: 14),
-                    const SizedBox(width: 4),
+                    const Icon(Icons.radar, color: Colors.white, size: 16),
+                    const SizedBox(width: 6),
                     Text(
-                      '${radiusInMeters!.toStringAsFixed(0)}m',
+                      '${widget.radiusInMeters!.toStringAsFixed(0)}m',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
-                        fontSize: 12,
+                        fontSize: 13,
                       ),
                     ),
                   ],
@@ -277,15 +376,20 @@ class LocationMapWidget extends StatelessWidget {
               ),
             ),
           // Client count indicator
-          if (clientMarkers != null && clientMarkers!.isNotEmpty)
+          if (widget.clientMarkers != null && widget.clientMarkers!.isNotEmpty)
             Positioned(
-              top: radiusInMeters != null && radiusInMeters! > 0 ? 40 : 10,
-              left: 10,
+              top: widget.radiusInMeters != null && widget.radiusInMeters! > 0
+                  ? 50
+                  : 12,
+              left: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
-                  color: Colors.green,
-                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.green.shade600,
+                  borderRadius: BorderRadius.circular(20),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withOpacity(0.2),
@@ -297,44 +401,51 @@ class LocationMapWidget extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.business, color: Colors.white, size: 14),
-                    const SizedBox(width: 4),
+                    const Icon(Icons.business, color: Colors.white, size: 16),
+                    const SizedBox(width: 6),
                     Text(
-                      '${clientMarkers!.length}',
+                      '${widget.clientMarkers!.length}',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
-                        fontSize: 12,
+                        fontSize: 13,
                       ),
                     ),
                   ],
                 ),
               ),
             ),
-          // Refresh button
-          if (showRefreshButton && onRefresh != null)
-            Positioned(
-              top: 10,
-              right: 10,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.2),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+          // Action Buttons Column
+          Positioned(
+            bottom: 12,
+            right: 12,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Recenter Button
+                FloatingActionButton.small(
+                  heroTag: 'recenter_map',
+                  onPressed: () => _recenterMap(),
+                  backgroundColor: Colors.white,
+                  child: Icon(
+                    Icons.center_focus_strong,
+                    // ✨ Visual feedback: Blue when tracking, Grey when free-look
+                    color: _isLiveTracking ? Colors.blueAccent : Colors.grey,
+                  ),
                 ),
-                child: IconButton(
-                  icon: const Icon(Icons.my_location, color: Colors.blue),
-                  onPressed: onRefresh,
-                  tooltip: 'Refresh Location',
-                ),
-              ),
+                // Refresh button (if enabled)
+                if (widget.showRefreshButton && widget.onRefresh != null) ...[
+                  const SizedBox(height: 12),
+                  FloatingActionButton.small(
+                    heroTag: 'refresh_location',
+                    onPressed: widget.onRefresh,
+                    backgroundColor: Colors.blueAccent,
+                    child: const Icon(Icons.refresh, color: Colors.white),
+                  ),
+                ],
+              ],
             ),
+          ),
         ],
       ),
     );
