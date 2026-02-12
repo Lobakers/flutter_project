@@ -698,17 +698,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     // If geofence filtering is disabled, return all clients
     if (!shouldFilterByGeofence) {
-      // debugPrint(
-      //   '📍 Geofence filter disabled for $_selectedJobType, showing all ${_clients.length} clients',
-      // );
       return _clients;
     }
 
     // If no location available, return all clients with a warning
     if (_latitude == null || _longitude == null) {
-      // debugPrint(
-      //   '⚠️ No location available, showing all ${_clients.length} clients',
-      // );
       return _clients;
     }
 
@@ -724,29 +718,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         return false; // Exclude clients without location
       }
 
-      final location = locationData[0];
-      final clientLat = (location['LATITUDE'] as num?)?.toDouble();
-      final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+      // ✨ NEW: Check ALL locations, not just the first one
+      bool isAnyLocationNearby = false;
 
-      if (clientLat == null || clientLng == null) {
-        return false; // Exclude clients with invalid coordinates
+      for (var location in locationData) {
+        final clientLat = (location['LATITUDE'] as num?)?.toDouble();
+        final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+
+        if (clientLat == null || clientLng == null) continue;
+
+        // Calculate distance
+        final distance = GeofenceHelper.calculateDistance(
+          _latitude!,
+          _longitude!,
+          clientLat,
+          clientLng,
+        );
+
+        if (distance <= configRadius) {
+          isAnyLocationNearby = true;
+          break; // Found one nearby location, so this client is valid
+        }
       }
 
-      // Calculate distance
-      final distance = GeofenceHelper.calculateDistance(
-        _latitude!,
-        _longitude!,
-        clientLat,
-        clientLng,
-      );
-
-      return distance <=
-          configRadius; // Only include clients within configured radius
+      return isAnyLocationNearby;
     }).toList();
-
-    // debugPrint(
-    //   '📍 Found ${nearbyClients.length} clients within 1000m (out of ${_clients.length} total)',
-    // );
 
     // Deduplicate by CLIENT_GUID to prevent dropdown errors
     final seenGuids = <String>{};
@@ -785,30 +781,36 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final locationData = client['LOCATION_DATA'] as List<dynamic>?;
       if (locationData == null || locationData.isEmpty) continue;
 
-      final location = locationData[0];
-      final clientLat = (location['LATITUDE'] as num?)?.toDouble();
-      final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+      // ✨ NEW: Create a marker for EVERY valid location
+      for (var location in locationData) {
+        final locationGuid = location['LOCATION_GUID'] as String?;
+        final clientLat = (location['LATITUDE'] as num?)?.toDouble();
+        final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+        final address = location['ADDRESS'] as String?;
 
-      if (clientLat == null || clientLng == null) continue;
+        if (clientLat == null || clientLng == null) continue;
 
-      // Calculate distance from user
-      final distance = GeofenceHelper.calculateDistance(
-        _latitude!,
-        _longitude!,
-        clientLat,
-        clientLng,
-      );
+        // Calculate distance from user
+        final distance = GeofenceHelper.calculateDistance(
+          _latitude!,
+          _longitude!,
+          clientLat,
+          clientLng,
+        );
 
-      markers.add(
-        ClientMarkerData(
-          clientGuid: client['CLIENT_GUID'] as String,
-          name: client['NAME'] as String? ?? 'Unknown',
-          abbreviation: client['ABBR'] as String? ?? 'N/A',
-          latitude: clientLat,
-          longitude: clientLng,
-          distance: distance,
-        ),
-      );
+        markers.add(
+          ClientMarkerData(
+            clientGuid: client['CLIENT_GUID'] as String,
+            locationGuid: locationGuid, // ✨ NEW
+            name: client['NAME'] as String? ?? 'Unknown',
+            abbreviation: client['ABBR'] as String? ?? 'N/A',
+            latitude: clientLat,
+            longitude: clientLng,
+            address: address, // ✨ NEW
+            distance: distance,
+          ),
+        );
+      }
     }
 
     // debugPrint('📍 Prepared ${markers.length} client markers for map');

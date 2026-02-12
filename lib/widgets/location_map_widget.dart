@@ -455,18 +455,22 @@ class _LocationMapWidgetState extends State<LocationMapWidget>
 // Data class for client markers
 class ClientMarkerData {
   final String clientGuid;
+  final String? locationGuid; // ✨ NEW: Identify specific location
   final String name;
   final String abbreviation;
   final double latitude;
   final double longitude;
+  final String? address; // ✨ NEW: Show specific address
   final double distance;
 
   ClientMarkerData({
     required this.clientGuid,
+    this.locationGuid,
     required this.name,
     required this.abbreviation,
     required this.latitude,
     required this.longitude,
+    this.address,
     required this.distance,
   });
 }
