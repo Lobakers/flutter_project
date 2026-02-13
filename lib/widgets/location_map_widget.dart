@@ -93,7 +93,7 @@ class _LocationMapWidgetState extends State<LocationMapWidget>
   Widget build(BuildContext context) {
     return Container(
       height: widget.height,
-      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16), // Slightly more rounded
         border: Border.all(

@@ -1771,8 +1771,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return Scaffold(
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(
-          166,
-        ), // AppBar height (56) + Banner height (120)
+          140,
+        ), // Reduced height to match tighter content (was 166)
         child: Container(
           decoration: const BoxDecoration(
             image: DecorationImage(
@@ -1862,37 +1862,39 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 ],
               ),
               // User info section (previously the banner)
-              Container(
-                height: 110,
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text(
-                          'Good Day!',
-                          style: TextStyle(fontSize: 16, color: Colors.white),
-                        ),
-                        Text(
-                          email,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.white,
+              Expanded(
+                child: Container(
+                  width: double.infinity,
+                  // Reduced top padding to pull text closer to AppBar title
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+                  child: Row(
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Good Day!',
+                            style: TextStyle(fontSize: 16, color: Colors.white),
                           ),
-                        ),
-                        Text(
-                          companyName,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.white,
+                          Text(
+                            email,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.white,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ],
+                          Text(
+                            companyName,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -1927,10 +1929,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               _buildJobTypeButtons(attendance),
               if (_selectedJobType.isNotEmpty) _buildForm(),
               _buildLocationDisplay(),
-              const SizedBox(height: 20),
+              const SizedBox(height: 5),
               _buildClockButton(),
               // if (_isClockedIn) _buildGeofenceStatus(),
-              const SizedBox(height: 30),
+              const SizedBox(height: 15),
             ],
           ),
         ),
@@ -2034,8 +2036,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _buildTimeCard() {
     return Container(
-      margin: const EdgeInsets.all(15),
-      padding: const EdgeInsets.all(15),
+      margin: const EdgeInsets.fromLTRB(10, 10, 10, 5),
+      padding: const EdgeInsets.fromLTRB(15, 5, 15, 5),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
@@ -2097,7 +2099,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 5),
       child: Row(
         children: visibleTypes.map((type) => _buildJobButton(type)).toList(),
       ),
@@ -2113,8 +2115,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       child: GestureDetector(
         onTap: _isClockedIn ? null : () => _onJobTypeSelected(title),
         child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 10),
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 15),
+          padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
             color: isSelected ? purpleBlue : Colors.white,
             borderRadius: BorderRadius.circular(8),
@@ -2213,7 +2215,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           // Show placeholder when no location
           Container(
             height: 250,
-            margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
             decoration: BoxDecoration(
               color: Colors.grey.shade100,
               borderRadius: BorderRadius.circular(12),
@@ -2269,7 +2271,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _buildForm() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       child: Column(
         children: [
           if (_fieldVisibility['client'] == true)
@@ -2299,7 +2301,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               'NAME',
               (v) => setState(() => _selectedContract = v),
             ),
-          if (_fieldVisibility['activity'] == true) _buildActivityField(),
+          // Activity field hidden as per user request (editable in history later)
+          // if (_fieldVisibility['activity'] == true) _buildActivityField(),
         ],
       ),
     );
@@ -2450,23 +2453,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildActivityField() {
-    return TextField(
-      controller: _activityController,
-      enabled: !_isClockedIn,
-      maxLines: 3,
-      onChanged: (v) => _activityName = v,
-      decoration: const InputDecoration(
-        labelText: 'Activity List',
-        hintText: 'Add task here',
-        border: OutlineInputBorder(),
-      ),
-    );
-  }
+  // Widget _buildActivityField() {
+  //   return TextField(
+  //     controller: _activityController,
+  //     enabled: !_isClockedIn,
+  //     maxLines: 3,
+  //     onChanged: (v) => _activityName = v,
+  //     decoration: const InputDecoration(
+  //       labelText: 'Activity List',
+  //       hintText: 'Add task here',
+  //       border: OutlineInputBorder(),
+  //     ),
+  //   );
+  // }
 
   Widget _buildClockButton() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       child: SlideAction(
         height: 60,
         sliderButtonIconSize: 20,

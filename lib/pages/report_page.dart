@@ -643,7 +643,7 @@ class _ReportPageState extends State<ReportPage> {
                     flex: 2,
                     child: Center(
                       child: Text(
-                        'Duration (hrs)',
+                        'Duration',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 14,
