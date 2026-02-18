@@ -335,6 +335,19 @@ class SyncService {
 
         // Return the real GUID so we can update local cache
         return {'success': true, 'realGuid': realGuid, 'clockTime': clockTime};
+      } else if (response.statusCode == 401) {
+        // ✅ FIX BUG #5: Detect token expiry
+        LoggerService.error(
+          '❌ Token expired during clock-in sync (401 Unauthorized)',
+          tag: 'SyncService',
+        );
+        LoggerService.error(
+          '⚠️ User needs to re-authenticate. Stopping retry to prevent battery drain.',
+          tag: 'SyncService',
+        );
+        // Return false to stop retrying with expired token
+        // TODO: Notify user to re-login
+        return {'success': false, 'tokenExpired': true};
       } else {
         LoggerService.error(
           'Clock in sync failed: ${response.statusCode} - ${response.body}',
@@ -397,6 +410,18 @@ class SyncService {
           tag: 'SyncService',
         );
         return true;
+      } else if (response.statusCode == 401) {
+        // ✅ FIX BUG #5: Detect token expiry
+        LoggerService.error(
+          '❌ Token expired during clock-out sync (401 Unauthorized)',
+          tag: 'SyncService',
+        );
+        LoggerService.error(
+          '⚠️ User needs to re-authenticate. Stopping retry to prevent battery drain.',
+          tag: 'SyncService',
+        );
+        // Return false to stop retrying with expired token
+        return false;
       } else {
         // ✨ Check if this is an orphaned clock-out (referencing non-existent GUID)
         final responseBody = response.body.toLowerCase();

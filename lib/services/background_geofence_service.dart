@@ -150,6 +150,7 @@ Future<void> startCallback() async {
 class GeofenceTaskHandler extends TaskHandler {
   int _violationCount = 0;
   final int _requiredViolations = GeofenceConfig.requiredViolations;
+  String? _lastClockRefGuid; // ✅ Track last GUID to detect new clock-in
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -183,16 +184,26 @@ class GeofenceTaskHandler extends TaskHandler {
         return;
       }
 
-      // Get tracking state from storage
+      // Get clock-in state
       final state = await StorageService.getClockInState();
-
       if (state == null || state['isClockedIn'] != true) {
-        LoggerService.info(
-          'Not clocked in, stopping tracking',
+        LoggerService.debug(
+          'Not clocked in, skipping geofence check',
           tag: 'GeofenceTaskHandler',
         );
-        await FlutterForegroundTask.stopService();
         return;
+      }
+
+      // ✅ FIX BUG #3: Reset violation counter on new clock-in
+      final currentClockRefGuid = state['clockRefGuid'] as String?;
+      if (currentClockRefGuid != null &&
+          currentClockRefGuid != _lastClockRefGuid) {
+        LoggerService.info(
+          'New clock-in detected (GUID changed), resetting violation counter',
+          tag: 'GeofenceTaskHandler',
+        );
+        _violationCount = 0;
+        _lastClockRefGuid = currentClockRefGuid;
       }
 
       final targetLat = state['targetLat'] as double?;
@@ -254,6 +265,40 @@ class GeofenceTaskHandler extends TaskHandler {
         return;
       }
 
+      // ✅ FIX BUG #10: Detect mock location (GPS spoofing)
+      // CRITICAL SECURITY: Prevent fraudulent clock-ins via fake GPS
+      if (position.isMocked) {
+        LoggerService.error(
+          '🚨 MOCK LOCATION DETECTED! User attempting GPS spoofing.',
+          tag: 'GeofenceTaskHandler',
+        );
+
+        // Immediately auto-clock-out with special reason
+        final location = '${position.latitude}, ${position.longitude}';
+        await _performAutoClockOut(
+          -1.0, // Distance irrelevant for mock location
+          location,
+          reason: 'mock_location_detected',
+        );
+
+        LoggerService.error(
+          '⚠️ Auto-clocked-out due to mock location detection',
+          tag: 'GeofenceTaskHandler',
+        );
+        return;
+      }
+
+      // ✅ FIX BUG #4: Check GPS accuracy before trusting the position
+      // Poor GPS accuracy (e.g., indoors) can cause false violations
+      if (position.accuracy > 100) {
+        LoggerService.warning(
+          'GPS accuracy too poor (${position.accuracy.toStringAsFixed(1)}m), skipping geofence check',
+          tag: 'GeofenceTaskHandler',
+        );
+        // Don't increment violation counter with unreliable position
+        return;
+      }
+
       // Calculate distance
       final distance = GeofenceHelper.calculateDistance(
         position.latitude,
@@ -263,7 +308,7 @@ class GeofenceTaskHandler extends TaskHandler {
       );
 
       LoggerService.debug(
-        'Distance from target: ${distance.toStringAsFixed(2)}m (radius: ${radiusInMeters}m)',
+        'Distance from target: ${distance.toStringAsFixed(2)}m (radius: ${radiusInMeters}m, accuracy: ${position.accuracy.toStringAsFixed(1)}m)',
         tag: 'GeofenceTaskHandler',
       );
 
@@ -587,6 +632,47 @@ class GeofenceTaskHandler extends TaskHandler {
           location: location,
           reason: reason,
         );
+
+        // ✅ SUCCESS: Clear state and stop service
+        await StorageService.clearClockInState();
+
+        // Update offline database cache to reflect clocked-out status
+        try {
+          await OfflineDatabase.init();
+          await OfflineDatabase.saveClockStatus({
+            'isClockedIn': false,
+            'clockLogGuid': null,
+            'clockTime': null,
+            'jobType': null,
+            'address': null,
+            'clientId': null,
+            'projectId': null,
+            'contractId': null,
+            'activityName': null,
+          });
+
+          LoggerService.info(
+            '✅ Updated offline database cache to clocked-out status',
+            tag: 'GeofenceTaskHandler',
+          );
+        } catch (e) {
+          LoggerService.error(
+            'Failed to update offline database: $e',
+            tag: 'GeofenceTaskHandler',
+            error: e,
+          );
+        }
+
+        // Wait a bit to ensure notification is posted
+        await Future.delayed(const Duration(seconds: 2));
+
+        // Stop the service
+        await FlutterForegroundTask.stopService();
+
+        LoggerService.info(
+          '🛑 Background service stopped after successful auto-clock-out',
+          tag: 'GeofenceTaskHandler',
+        );
       } else {
         final errorMsg = response != null
             ? 'Status: ${response.statusCode}'
@@ -618,6 +704,21 @@ class GeofenceTaskHandler extends TaskHandler {
             location: location,
             reason: reason,
           );
+
+          // ✅ FIX BUG #2: DON'T stop service or clear state when API fails!
+          // Keep monitoring so we can try again or wait for sync to succeed
+          LoggerService.warning(
+            '⚠️ Auto-clock-out queued but service CONTINUES monitoring (API failed)',
+            tag: 'GeofenceTaskHandler',
+          );
+          LoggerService.warning(
+            '⚠️ Service will stop when sync succeeds or next check cycle',
+            tag: 'GeofenceTaskHandler',
+          );
+
+          // ❌ DON'T clear state or stop service here!
+          // Exit early to keep service running
+          return;
         } catch (queueError) {
           LoggerService.error(
             '❌ FAILED TO QUEUE FALLBACK ACTION: $queueError',
@@ -631,55 +732,30 @@ class GeofenceTaskHandler extends TaskHandler {
             reason: 'queue_failed',
           );
 
-          // Abort clearing state so user can try again
+          // ✅ FIX BUG #8: Clear state to prevent inconsistency
+          // If we can't queue the action, clear state so user knows they need to clock in again
+          LoggerService.error(
+            '⚠️ Clearing clock-in state due to queue failure',
+            tag: 'GeofenceTaskHandler',
+          );
+          await StorageService.clearClockInState();
+          await OfflineDatabase.saveClockStatus({
+            'isClockedIn': false,
+            'clockLogGuid': null,
+            'clockTime': null,
+            'jobType': null,
+            'address': null,
+            'clientId': null,
+            'projectId': null,
+            'contractId': null,
+            'activityName': null,
+          });
+
+          // Stop service
           await FlutterForegroundTask.stopService();
           return;
         }
       }
-
-      // Clear clock-in state
-      await StorageService.clearClockInState();
-
-      // ✨ FIX: Update offline database cache to reflect clocked-out status
-      // This ensures UI updates correctly when app resumes
-      try {
-        // Ensure OfflineDatabase is initialized before updating
-        await OfflineDatabase.init();
-
-        await OfflineDatabase.saveClockStatus({
-          'isClockedIn': false,
-          'clockLogGuid': null,
-          'clockTime': null,
-          'jobType': null,
-          'address': null,
-          'clientId': null,
-          'projectId': null,
-          'contractId': null,
-          'activityName': null,
-        });
-
-        LoggerService.info(
-          '✅ Updated offline database cache to clocked-out status (ONLINE)',
-          tag: 'GeofenceTaskHandler',
-        );
-      } catch (e) {
-        LoggerService.error(
-          'Failed to update offline database: $e',
-          tag: 'GeofenceTaskHandler',
-          error: e,
-        );
-      }
-
-      // Wait a bit to ensure notification is posted
-      await Future.delayed(const Duration(seconds: 2));
-
-      // Stop tracking
-      await FlutterForegroundTask.stopService();
-
-      LoggerService.info(
-        'Auto clock-out completed (BACKGROUND)',
-        tag: 'GeofenceTaskHandler',
-      );
     } catch (e, stackTrace) {
       LoggerService.error(
         'Error performing auto clock-out',

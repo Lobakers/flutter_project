@@ -119,10 +119,37 @@ class ClockApi {
         // ✨ Add tempGuid to body so SyncService can track it correctly
         body['_tempGuid'] = tempGuid;
 
-        await PendingSyncService.addPendingAction(
-          actionType: 'clock_in',
-          payload: body,
-        );
+        // ✅ FIX BUG #12: Handle storage full errors
+        // CRITICAL: Prevent silent data loss when phone storage is full
+        try {
+          await PendingSyncService.addPendingAction(
+            actionType: 'clock_in',
+            payload: body,
+          );
+        } catch (storageError) {
+          LoggerService.error(
+            'Failed to queue clock-in action (storage full?): $storageError',
+            tag: 'ClockApi',
+          );
+
+          // Show user-friendly error
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  '⚠️ Storage full! Cannot save clock-in. Please free up space and try again.',
+                ),
+                backgroundColor: Colors.red,
+                duration: Duration(seconds: 10),
+              ),
+            );
+          }
+
+          return {
+            "success": false,
+            "message": "Storage full. Please free up space and try again.",
+          };
+        }
 
         // Save temporary clock status locally
         await OfflineDatabase.saveClockStatus({

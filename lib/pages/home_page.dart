@@ -8,6 +8,7 @@ import 'package:beewhere/controller/clock_api.dart';
 import 'package:beewhere/controller/geofence_helper.dart';
 import 'package:beewhere/controller/auto_clockout_service.dart';
 import 'package:beewhere/services/offline_database.dart';
+import 'package:beewhere/services/storage_service.dart'; // ✅ Import for watchdog
 import 'package:beewhere/services/background_geofence_service.dart';
 import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/services/location_permission_service.dart';
@@ -50,12 +51,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String _currentDate = '';
   String _currentDay = '';
   Timer? _timer;
+  Timer? _serviceWatchdog; // ✅ FIX BUG #7: Watchdog to detect service death
 
   // Clock state
   bool _isClockedIn = false;
   String _clockStatus = "You Haven't Clocked In Yet";
   String? _clockRefGuid;
   String? _clockInTime;
+  bool _isProcessingClockAction =
+      false; // ✅ FIX BUG #14: Lock form during API call
 
   // Form state
   String _selectedJobType = '';
@@ -129,6 +133,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     // ✨ Add app lifecycle observer to refresh status when app resumes
     WidgetsBinding.instance.addObserver(this);
+
+    // ✅ FIX BUG #7: Start service watchdog to detect if OS kills the service
+    _startServiceWatchdog();
   }
 
   @override
@@ -137,6 +144,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     if (state == AppLifecycleState.resumed) {
       debugPrint('📱 App resumed, refreshing clock status');
+
+      // Re-check connectivity status on app resume
+      // This fixes the issue where indicator stays "offline" after phone sleep
+      try {
+        final isOnline = await ConnectivityService.checkConnectivity();
+        if (mounted) {
+          setState(() {
+            _isOnline = isOnline;
+          });
+        }
+        debugPrint('📡 Connectivity refreshed on resume: $_isOnline');
+      } catch (e) {
+        debugPrint('⚠️ Error checking connectivity on resume: $e');
+      }
 
       // ✨ Resume stream if needed
       if (_positionStreamSubscription == null ||
@@ -156,6 +177,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       // Refresh clock status from server when app resumes
       _checkExistingClock();
+
+      // ✅ FIX BUG #6: Refresh pending sync count on app resume
+      // This ensures badge updates after background sync completes
+      try {
+        final count = await PendingSyncService.getPendingCount();
+        if (mounted) {
+          setState(() {
+            _pendingSyncCount = count;
+          });
+        }
+        debugPrint('📊 Pending sync count refreshed: $count');
+      } catch (e) {
+        debugPrint('⚠️ Error refreshing pending count: $e');
+      }
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       debugPrint('📱 App paused/inactive, background service will take over');
@@ -189,9 +224,59 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
+  // ✅ FIX BUG #7: Service watchdog to detect and restart dead service
+  void _startServiceWatchdog() {
+    // Check every 5 minutes if service is still running
+    _serviceWatchdog = Timer.periodic(const Duration(minutes: 5), (
+      timer,
+    ) async {
+      try {
+        // Only check if user is clocked in
+        if (!_isClockedIn) return;
+
+        final isRunning = await FlutterForegroundTask.isRunningService;
+        if (!isRunning) {
+          debugPrint(
+            '⚠️ WATCHDOG: Background service died! Attempting restart...',
+          );
+
+          // Get saved tracking parameters from storage
+          final state = await StorageService.getClockInState();
+          if (state != null && state['isClockedIn'] == true) {
+            final targetLat = state['targetLat'] as double?;
+            final targetLng = state['targetLng'] as double?;
+            final targetAddress = state['targetAddress'] as String?;
+            final radiusInMeters = state['radiusInMeters'] as double?;
+            final clockRefGuid = state['clockRefGuid'] as String?;
+
+            if (targetLat != null &&
+                targetLng != null &&
+                clockRefGuid != null) {
+              debugPrint(
+                '🔄 WATCHDOG: Restarting service with saved parameters',
+              );
+              await BackgroundGeofenceService.startTracking(
+                targetLat: targetLat,
+                targetLng: targetLng,
+                targetAddress: targetAddress ?? 'work location',
+                radiusInMeters:
+                    radiusInMeters ?? GeofenceConfig.autoClockOutRadius,
+                clockRefGuid: clockRefGuid,
+              );
+              debugPrint('✅ WATCHDOG: Service restarted successfully');
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ WATCHDOG: Error checking service: $e');
+      }
+    });
+  }
+
   @override
   void dispose() {
     _timer?.cancel();
+    _serviceWatchdog?.cancel(); // ✅ Stop watchdog
     _positionStreamSubscription?.cancel(); // ✨ Cancel stream
     _activityController.dispose();
     _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
@@ -375,8 +460,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // ✨ LOAD CACHED DATA FOR INSTANT UI
   Future<void> _loadCachedData() async {
-    // 1. Load Clock Status
+    // 1. Load Clock Status (only if not already loaded from server)
     try {
+      // ✅ FIX: Don't overwrite server data with stale cache
+      if (_clockRefGuid != null) {
+        debugPrint('⏭️ Skipping cache load - server data already loaded');
+        return;
+      }
+
       final cachedClock = await OfflineDatabase.getClockStatus();
       if (cachedClock != null && mounted) {
         debugPrint('📱 Loaded clock status from cache');
@@ -424,7 +515,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _initializeData() async {
-    // ✨ Load cache FIRST for instant feedback
+    // ✅ FIX: Check server state FIRST to avoid showing stale cache
+    // This prevents showing "31 hours clocked in" from old cache
+    await _checkExistingClock();
+
+    // ✨ Load cache FIRST for instant feedback (if server check failed)
     await _loadCachedData();
 
     await DeviceInfoHelper.init();
@@ -462,9 +557,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // This handles foreground permission if not already granted
     await _getCurrentPosition();
 
-    // 3. Check Clock Status
-    // This uses location for geofence monitoring
-    await _checkExistingClock();
+    // Note: _checkExistingClock() now called in _initializeData()
+    // to prevent showing stale cache before server verification
   }
 
   void _startTimers() {
@@ -541,6 +635,58 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       // ✨ If already clocked in, restart geofence monitoring
       await _startGeofenceMonitoringForClient(_selectedClient);
+
+      // ✅ FIX BUG #13: Restart background service if not running
+      // CRITICAL: After clear app data, UI syncs but service doesn't restart
+      try {
+        final isServiceRunning = await FlutterForegroundTask.isRunningService;
+        if (!isServiceRunning) {
+          debugPrint(
+            '⚠️ User clocked in but background service not running! Restarting...',
+          );
+
+          // Get saved tracking parameters from storage
+          final state = await StorageService.getClockInState();
+          if (state != null && state['isClockedIn'] == true) {
+            final targetLat = state['targetLat'] as double?;
+            final targetLng = state['targetLng'] as double?;
+            final targetAddress = state['targetAddress'] as String?;
+            final radiusInMeters = state['radiusInMeters'] as double?;
+            final clockRefGuid = state['clockRefGuid'] as String?;
+
+            if (targetLat != null &&
+                targetLng != null &&
+                clockRefGuid != null) {
+              debugPrint(
+                '🔄 Restarting background service with saved parameters',
+              );
+
+              // Get configured radius for current job type
+              final attendance = Provider.of<AttendanceProvider>(
+                context,
+                listen: false,
+              );
+              final configRadius =
+                  attendance.getRadiusForJobType(_selectedJobType) ??
+                  radiusInMeters ??
+                  GeofenceConfig.autoClockOutRadius;
+
+              await BackgroundGeofenceService.startTracking(
+                targetLat: targetLat,
+                targetLng: targetLng,
+                targetAddress: targetAddress ?? 'work location',
+                radiusInMeters: configRadius,
+                clockRefGuid: clockRefGuid,
+              );
+              debugPrint('✅ Background service restarted successfully');
+            } else {
+              debugPrint('⚠️ Missing required parameters to restart service');
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ Error checking/restarting background service: $e');
+      }
     } else if (result['success'] && result['isClockedIn'] == false) {
       // ✨ FIX: If cache said we were clocked in, but server says we are NOT, reset UI
       if (_isClockedIn) {
@@ -609,6 +755,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       debugPrint('   const double testLat = $_latitude;');
       debugPrint('   const double testLng = $_longitude;');
       debugPrint('═══════════════════════════════════════════');
+
+      // ✅ FIX BUG #10: Detect mock location during clock-in
+      // CRITICAL SECURITY: Prevent fraudulent clock-ins
+      if (position.isMocked) {
+        debugPrint('🚨 MOCK LOCATION DETECTED during clock-in attempt!');
+        if (mounted) {
+          setState(() {
+            _currentAddress = "Mock location detected";
+            _isLoading = false;
+          });
+          _showDialog(
+            'Invalid Location',
+            'Mock location detected. Please disable any GPS spoofing apps and try again.\n\nThis is a security measure to prevent fraudulent clock-ins.',
+          );
+        }
+        return;
+      }
 
       // Display coordinates instead of address to save geocoding API costs
       final coordinates =
@@ -774,6 +937,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // ✨ Get filtered clients based on current job type's geofence setting
     final filteredClients = _getNearbyClients();
 
+    // ✨ Get the configured radius for filtering
+    final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+    final configRadius =
+        attendance.getRadiusForJobType(_selectedJobType) ??
+        GeofenceConfig.clientFilterRadius;
+
     // Convert to marker data
     final markers = <ClientMarkerData>[];
 
@@ -781,7 +950,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final locationData = client['LOCATION_DATA'] as List<dynamic>?;
       if (locationData == null || locationData.isEmpty) continue;
 
-      // ✨ NEW: Create a marker for EVERY valid location
+      // ✨ NEW: Create a marker for EVERY valid location WITHIN RADIUS
       for (var location in locationData) {
         final locationGuid = location['LOCATION_GUID'] as String?;
         final clientLat = (location['LATITUDE'] as num?)?.toDouble();
@@ -798,18 +967,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           clientLng,
         );
 
-        markers.add(
-          ClientMarkerData(
-            clientGuid: client['CLIENT_GUID'] as String,
-            locationGuid: locationGuid, // ✨ NEW
-            name: client['NAME'] as String? ?? 'Unknown',
-            abbreviation: client['ABBR'] as String? ?? 'N/A',
-            latitude: clientLat,
-            longitude: clientLng,
-            address: address, // ✨ NEW
-            distance: distance,
-          ),
-        );
+        // ✨ FIX: Only add marker if location is within radius
+        if (distance <= configRadius) {
+          markers.add(
+            ClientMarkerData(
+              clientGuid: client['CLIENT_GUID'] as String,
+              locationGuid: locationGuid, // ✨ NEW
+              name: client['NAME'] as String? ?? 'Unknown',
+              abbreviation: client['ABBR'] as String? ?? 'N/A',
+              latitude: clientLat,
+              longitude: clientLng,
+              address: address, // ✨ NEW
+              distance: distance,
+            ),
+          );
+        }
       }
     }
 
@@ -901,6 +1073,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // ===================== CLOCK IN/OUT =====================
 
   Future<void> _handleClockAction() async {
+    // ✅ FIX BUG #14: Prevent concurrent actions
+    if (_isProcessingClockAction) {
+      debugPrint('⚠️ Clock action already in progress, ignoring');
+      return;
+    }
+
     // Validation 1: Job type required
     if (_selectedJobType.isEmpty) {
       _showDialog(
@@ -939,10 +1117,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     }
 
-    if (_isClockedIn) {
-      await _performClockOut();
-    } else {
-      await _performClockIn();
+    // ✅ FIX BUG #14: Lock form during processing
+    setState(() => _isProcessingClockAction = true);
+
+    try {
+      if (_isClockedIn) {
+        await _performClockOut();
+      } else {
+        await _performClockIn();
+      }
+    } finally {
+      // ✅ Always unlock form after processing
+      if (mounted) {
+        setState(() => _isProcessingClockAction = false);
+      }
     }
   }
 
@@ -999,14 +1187,34 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           if (isOptimized && mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: const Text(
-                  '💡 Tip: For better background tracking, please disable "Battery Optimization" for BeeWhere in your phone settings.',
+                content: Row(
+                  children: [
+                    const Icon(
+                      Icons.battery_alert_rounded,
+                      color: Colors.orange,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'Disable "Battery Optimization" for accurate tracking.',
+                        style: TextStyle(fontSize: 13, color: Colors.white),
+                      ),
+                    ),
+                  ],
                 ),
-                backgroundColor: const Color(0xFF4B39EF),
+                backgroundColor: const Color(
+                  0xFF333333,
+                ), // Professional dark grey
+                behavior: SnackBarBehavior.floating,
+                margin: const EdgeInsets.all(16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
                 duration: const Duration(seconds: 8),
                 action: SnackBarAction(
-                  label: 'SETTINGS',
-                  textColor: Colors.white,
+                  label: 'FIX',
+                  textColor: Colors.orange,
                   onPressed: () {
                     openAppSettings();
                   },
