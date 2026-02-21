@@ -151,6 +151,11 @@ class GeofenceTaskHandler extends TaskHandler {
   int _violationCount = 0;
   final int _requiredViolations = GeofenceConfig.requiredViolations;
   String? _lastClockRefGuid; // ✅ Track last GUID to detect new clock-in
+  DateTime?
+  _clockInStartTime; // ✅ Track when clock-in started (for minimum duration protection)
+  static const Duration _minimumClockInDuration = Duration(
+    seconds: 30,
+  ); // ✅ Don't trigger within 30s of clock-in
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -199,11 +204,12 @@ class GeofenceTaskHandler extends TaskHandler {
       if (currentClockRefGuid != null &&
           currentClockRefGuid != _lastClockRefGuid) {
         LoggerService.info(
-          'New clock-in detected (GUID changed), resetting violation counter',
+          'New clock-in detected (GUID changed), resetting violation counter and starting minimum duration timer',
           tag: 'GeofenceTaskHandler',
         );
         _violationCount = 0;
         _lastClockRefGuid = currentClockRefGuid;
+        _clockInStartTime = DateTime.now(); // ✅ Reset timer on new clock-in
       }
 
       final targetLat = state['targetLat'] as double?;
@@ -314,6 +320,19 @@ class GeofenceTaskHandler extends TaskHandler {
 
       // Check if outside radius
       if (distance > radiusInMeters) {
+        // ✅ FIX: Minimum duration protection - don't trigger within 30 seconds of clock-in
+        // This prevents false triggers right after clock-in when user is in transition
+        if (_clockInStartTime != null) {
+          final elapsed = DateTime.now().difference(_clockInStartTime!);
+          if (elapsed < _minimumClockInDuration) {
+            LoggerService.warning(
+              'Too soon for auto clock-out (${elapsed.inSeconds}s / ${_minimumClockInDuration.inSeconds}s). Ignoring violation.',
+              tag: 'GeofenceTaskHandler',
+            );
+            return; // Don't count this violation
+          }
+        }
+
         _violationCount++;
         LoggerService.warning(
           'Violation $_violationCount/$_requiredViolations: ${distance.toStringAsFixed(2)}m > ${radiusInMeters}m',

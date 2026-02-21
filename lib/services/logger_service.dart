@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
@@ -11,6 +12,12 @@ class LoggerService {
   static Database? _database;
   static Logger? _logger;
   static bool _isInitialized = false;
+
+  // ✨ Stream for real-time log updates (for UI like LogViewerPage)
+  static final StreamController<Map<String, dynamic>> _logStreamController =
+      StreamController<Map<String, dynamic>>.broadcast();
+  static Stream<Map<String, dynamic>> get logStream =>
+      _logStreamController.stream;
 
   // Log levels
   static const String levelDebug = 'DEBUG';
@@ -85,8 +92,18 @@ class LoggerService {
     if (_database == null) return;
 
     try {
+      final timestamp = DateTime.now().toIso8601String();
       await _database!.insert('logs', {
-        'timestamp': DateTime.now().toIso8601String(),
+        'timestamp': timestamp,
+        'level': level,
+        'tag': tag,
+        'message': message,
+        'stackTrace': stackTrace,
+      });
+
+      // ✨ Emit stream event for real-time updates (e.g., LogViewerPage)
+      _logStreamController.add({
+        'timestamp': timestamp,
         'level': level,
         'tag': tag,
         'message': message,
@@ -216,6 +233,185 @@ class LoggerService {
       tag: tag,
       stackTrace: stackTrace?.toString(),
     );
+  }
+
+  /// ✨ EMOJI DEBUG LOGS - These appear in both app logs and on-device viewer
+  /// Perfect for testing on physical devices without needing a laptop!
+
+  /// Location/Geofence logs (📍 📏 ⏰)
+  static void logLocation(String message) {
+    if (!_isInitialized) {
+      debugPrint('📍 $message');
+      return;
+    }
+    final fullMsg = '📍 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  static void logDistance(String message) {
+    if (!_isInitialized) {
+      debugPrint('📏 $message');
+      return;
+    }
+    final fullMsg = '📏 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  static void logTimeWarning(String message) {
+    if (!_isInitialized) {
+      debugPrint('⏰ $message');
+      return;
+    }
+    final fullMsg = '⏰ $message';
+    _logger?.w(fullMsg);
+    _saveToDatabase(level: levelWarning, message: fullMsg);
+  }
+
+  /// Geofence monitoring logs (🎯 🛑 ⏳ 🚨)
+  static void logGeofenceStart(String message) {
+    if (!_isInitialized) {
+      debugPrint('🎯 $message');
+      return;
+    }
+    final fullMsg = '🎯 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  static void logGeofenceStop(String message) {
+    if (!_isInitialized) {
+      debugPrint('🛑 $message');
+      return;
+    }
+    final fullMsg = '🛑 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  static void logGeofenceWaiting(String message) {
+    if (!_isInitialized) {
+      debugPrint('⏳ $message');
+      return;
+    }
+    final fullMsg = '⏳ $message';
+    _logger?.w(fullMsg);
+    _saveToDatabase(level: levelWarning, message: fullMsg);
+  }
+
+  static void logGeofenceViolation(String message) {
+    if (!_isInitialized) {
+      debugPrint('! $message');
+      return;
+    }
+    final fullMsg = '! $message';
+    _logger?.w(fullMsg);
+    _saveToDatabase(level: levelWarning, message: fullMsg);
+  }
+
+  static void logGeofenceConfirmed(String message) {
+    if (!_isInitialized) {
+      debugPrint('🚨 $message');
+      return;
+    }
+    final fullMsg = '🚨 $message';
+    _logger?.e(fullMsg);
+    _saveToDatabase(level: levelError, message: fullMsg);
+  }
+
+  /// Auto clock-out logs (💾 🔔 🔓)
+  static void logAutoClockOut(String message) {
+    if (!_isInitialized) {
+      debugPrint('🚨 $message');
+      return;
+    }
+    final fullMsg = '🚨 $message';
+    _logger?.e(fullMsg);
+    _saveToDatabase(level: levelError, message: fullMsg);
+  }
+
+  static void logSaveStatus(String message) {
+    if (!_isInitialized) {
+      debugPrint('💾 $message');
+      return;
+    }
+    final fullMsg = '💾 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  static void logNotification(String message) {
+    if (!_isInitialized) {
+      debugPrint('🔔 $message');
+      return;
+    }
+    final fullMsg = '🔔 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  static void logLockStatus(String message) {
+    if (!_isInitialized) {
+      debugPrint('🔓 $message');
+      return;
+    }
+    final fullMsg = '🔓 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  /// Success/Failure logs (✅ ❌)
+  static void logSuccess(String message) {
+    if (!_isInitialized) {
+      debugPrint('✅ $message');
+      return;
+    }
+    final fullMsg = '✅ $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  static void logFailure(String message) {
+    if (!_isInitialized) {
+      debugPrint('❌ $message');
+      return;
+    }
+    final fullMsg = '❌ $message';
+    _logger?.w(fullMsg);
+    _saveToDatabase(level: levelWarning, message: fullMsg);
+  }
+
+  /// API/Network logs (📡 💡)
+  static void logApiAction(String message) {
+    if (!_isInitialized) {
+      debugPrint('💡 $message');
+      return;
+    }
+    final fullMsg = '💡 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  static void logConnectivity(String message) {
+    if (!_isInitialized) {
+      debugPrint('📡 $message');
+      return;
+    }
+    final fullMsg = '📡 $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
+  }
+
+  /// Generic emoji log
+  static void logWithEmoji(String emoji, String message) {
+    if (!_isInitialized) {
+      debugPrint('$emoji $message');
+      return;
+    }
+    final fullMsg = '$emoji $message';
+    _logger?.i(fullMsg);
+    _saveToDatabase(level: levelInfo, message: fullMsg);
   }
 
   /// Close database connection

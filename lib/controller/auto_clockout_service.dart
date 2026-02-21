@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:beewhere/controller/geofence_helper.dart';
 import 'package:beewhere/config/geofence_config.dart';
+import 'package:beewhere/services/logger_service.dart'; // ✨ For on-device debug logs
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
@@ -25,9 +26,9 @@ class AutoClockOutService {
   static Future<void> resetGlobalLock() async {
     try {
       await FlutterForegroundTask.saveData(key: _globalLockKey, value: false);
-      debugPrint('🔓 Global native auto clock-out lock reset');
+      LoggerService.logLockStatus('Global native auto clock-out lock reset');
     } catch (e) {
-      debugPrint('⚠️ Error resetting global lock: $e');
+      LoggerService.logFailure('Error resetting global lock: $e');
     }
   }
 
@@ -73,7 +74,10 @@ class AutoClockOutService {
     double? radiusInMeters, // ✨ Optional override
   }) async {
     if (_isMonitoring) {
-      debugPrint('⚠️ Already monitoring, stopping previous session');
+      LoggerService.logWithEmoji(
+        '!',
+        'Already monitoring, stopping previous session',
+      );
       stopMonitoring();
     }
 
@@ -82,7 +86,14 @@ class AutoClockOutService {
     _targetAddress = targetAddress;
     // ✨ Use override if provided, otherwise fallback to default
     if (radiusInMeters != null) {
+      LoggerService.logGeofenceStart(
+        '[AutoClockOutService.startMonitoring] Setting radius to: $radiusInMeters m (was: ${this.radiusInMeters} m)',
+      );
       this.radiusInMeters = radiusInMeters;
+    } else {
+      LoggerService.logGeofenceStart(
+        '[AutoClockOutService.startMonitoring] No radius override, keeping default: ${this.radiusInMeters} m',
+      );
     }
     _isMonitoring = true;
     _violationCount = 0; // Reset violation counter
@@ -90,12 +101,23 @@ class AutoClockOutService {
     _sessionGuid = DateTime.now().millisecondsSinceEpoch
         .toString(); // ✨ New session ID
 
-    debugPrint('🎯 Started geofence monitoring (Session: $_sessionGuid)');
-    debugPrint('   Target: $_targetLat, $_targetLng');
-    debugPrint('   Radius: ${this.radiusInMeters}m');
-    debugPrint('   Check interval: ${checkInterval.inSeconds}s');
-    debugPrint('   Required violations: $_requiredViolations');
-    debugPrint('   Minimum duration: ${_minimumClockInDuration.inSeconds}s');
+    LoggerService.logGeofenceStart(
+      'Started geofence monitoring (Session: $_sessionGuid)',
+    );
+    LoggerService.logWithEmoji('   🎯', 'Target: $_targetLat, $_targetLng');
+    LoggerService.logDistance('Radius: ${this.radiusInMeters}m');
+    LoggerService.logWithEmoji(
+      '   ⏱️',
+      'Check interval: ${checkInterval.inSeconds}s',
+    );
+    LoggerService.logWithEmoji(
+      '   ✓',
+      'Required violations: $_requiredViolations',
+    );
+    LoggerService.logWithEmoji(
+      '   ⏳',
+      'Minimum duration: ${_minimumClockInDuration.inSeconds}s',
+    );
 
     // Start location service monitoring
     _startLocationServiceMonitoring();
@@ -108,8 +130,9 @@ class AutoClockOutService {
     _checkTimer = Timer.periodic(checkInterval, (timer) async {
       // ✨ GHOST PROTECTION: If session has changed, cancel this timer immediately
       if (!_isMonitoring || currentSession != _sessionGuid) {
-        debugPrint(
-          '👻 Ghost timer detected for session $currentSession, canceling.',
+        LoggerService.logWithEmoji(
+          '👻',
+          'Ghost timer detected for session $currentSession, canceling.',
         );
         timer.cancel();
         return;
@@ -124,7 +147,7 @@ class AutoClockOutService {
 
         await _checkLocation(position);
       } catch (e) {
-        debugPrint('❌ Error getting position: $e');
+        LoggerService.logFailure('Error getting position: $e');
 
         // Check if error is due to location service being disabled
         final isEnabled = await _checkLocationServiceStatus();
@@ -140,7 +163,9 @@ class AutoClockOutService {
             value: true,
           );
 
-          debugPrint('🚨 Location service disabled (detected via error)');
+          LoggerService.logAutoClockOut(
+            'Location service disabled (detected via error)',
+          );
 
           // Trigger callback
           if (onLeaveGeofence != null) {
@@ -160,7 +185,7 @@ class AutoClockOutService {
       );
       await _checkLocation(position);
     } catch (e) {
-      debugPrint('❌ Error on initial position check: $e');
+      LoggerService.logFailure('Error on initial position check: $e');
     }
   }
 
@@ -177,7 +202,7 @@ class AutoClockOutService {
     _targetAddress = null;
     _violationCount = 0; // Reset counter
     _monitoringStartTime = null; // ✨ Reset monitoring start time
-    debugPrint('🛑 Stopped geofence monitoring');
+    LoggerService.logGeofenceStop('Stopped geofence monitoring');
   }
 
   /// Check current location against target
@@ -191,6 +216,27 @@ class AutoClockOutService {
         '📍 Current location: ${position.latitude}, ${position.longitude}',
       );
 
+      // ✅ FIX: Detect mock location (GPS spoofing) - SECURITY CHECK
+      // Prevent fraudulent clock-outs via fake GPS
+      if (position.isMocked) {
+        LoggerService.error(
+          '🚨 MOCK LOCATION DETECTED in AutoClockOutService! Ignoring to prevent spoofing.',
+          tag: 'AutoClockOutService',
+        );
+        return; // Ignore this check
+      }
+
+      // ✅ FIX: Check GPS accuracy before trusting the position - RELIABILITY CHECK
+      // Poor GPS accuracy (e.g., indoors) can cause false violations
+      if (position.accuracy > 100) {
+        LoggerService.warning(
+          'GPS accuracy too poor (${position.accuracy.toStringAsFixed(1)}m in AutoClockOutService), skipping geofence check',
+          tag: 'AutoClockOutService',
+        );
+        // Don't increment violation counter with unreliable position
+        return; // Skip this check but keep monitoring
+      }
+
       // Calculate distance
       final distance = GeofenceHelper.calculateDistance(
         position.latitude,
@@ -199,7 +245,12 @@ class AutoClockOutService {
         _targetLng!,
       );
 
-      debugPrint('📏 Distance from target: ${distance.toStringAsFixed(2)}m');
+      LoggerService.logDistance(
+        'Distance from target: ${distance.toStringAsFixed(2)}m (accuracy: ${position.accuracy.toStringAsFixed(1)}m)',
+      );
+      LoggerService.logDistance(
+        'Current radius in service: ${this.radiusInMeters}m',
+      );
 
       // ✨ NEW: Check if outside radius (with violation counter)
       if (distance > radiusInMeters) {
@@ -207,16 +258,16 @@ class AutoClockOutService {
         if (_monitoringStartTime != null) {
           final elapsed = DateTime.now().difference(_monitoringStartTime!);
           if (elapsed < _minimumClockInDuration) {
-            debugPrint(
-              '⏰ Too soon for auto clock-out (${elapsed.inSeconds}s / ${_minimumClockInDuration.inSeconds}s). Ignoring violation.',
+            LoggerService.logTimeWarning(
+              'Too soon for auto clock-out (${elapsed.inSeconds}s / ${_minimumClockInDuration.inSeconds}s). Ignoring violation.',
             );
             return; // Don't count violations yet
           }
         }
 
         _violationCount++;
-        debugPrint(
-          '⚠️ Violation $_violationCount/$_requiredViolations: ${distance.toStringAsFixed(2)}m > ${radiusInMeters}m',
+        LoggerService.logGeofenceViolation(
+          'Violation $_violationCount/$_requiredViolations: ${distance.toStringAsFixed(2)}m > ${radiusInMeters}m',
         );
 
         // Only trigger if consecutive violations exceed threshold
@@ -227,8 +278,8 @@ class AutoClockOutService {
           );
 
           if (isAlreadyProcessing == true) {
-            debugPrint(
-              '⚠️ Auto clock-out already being processed NATIVELY, ignoring.',
+            LoggerService.logFailure(
+              'Auto clock-out already being processed NATIVELY, ignoring.',
             );
             return;
           }
@@ -239,8 +290,8 @@ class AutoClockOutService {
             value: true,
           );
 
-          debugPrint(
-            '🚨 User CONFIRMED OUTSIDE geofence! Distance: ${distance.toStringAsFixed(2)}m',
+          LoggerService.logGeofenceConfirmed(
+            'User CONFIRMED OUTSIDE geofence! Distance: ${distance.toStringAsFixed(2)}m',
           );
 
           // ✨ CRITICAL: Stop monitoring IMMEDIATELY before triggering callback
@@ -253,20 +304,21 @@ class AutoClockOutService {
             await onLeaveGeofence!(distanceToReport);
           }
         } else {
-          debugPrint(
-            '⏳ Waiting for confirmation... ($_violationCount/$_requiredViolations)',
+          LoggerService.logGeofenceWaiting(
+            'Waiting for confirmation... ($_violationCount/$_requiredViolations)',
           );
         }
       } else {
         // Back inside - reset counter
         if (_violationCount > 0) {
-          debugPrint(
-            '🔄 Back inside geofence! Resetting violation count (was $_violationCount)',
+          LoggerService.logWithEmoji(
+            '🔄',
+            'Back inside geofence! Resetting violation count (was $_violationCount)',
           );
         }
         _violationCount = 0;
-        debugPrint(
-          '✅ User is inside geofence (${distance.toStringAsFixed(2)}m < ${radiusInMeters}m)',
+        LoggerService.logSuccess(
+          'User is inside geofence (${distance.toStringAsFixed(2)}m < ${radiusInMeters}m)',
         );
       }
 

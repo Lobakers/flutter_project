@@ -255,10 +255,13 @@ class _ProfilePageState extends State<ProfilePage> {
         child: Column(
           children: [
             const SizedBox(height: 20),
-            // _buildInfoSection(userId),
-            // const SizedBox(height: 20),
-            // _buildSettingsSection(),
-            // const SizedBox(height: 20),
+            // ✨ Only show info and settings sections for irfan@zen.com.my
+            if (email == 'irfan@zen.com.my') ...[
+              _buildInfoSection(userId),
+              const SizedBox(height: 20),
+              _buildSettingsSection(),
+            ],
+            const SizedBox(height: 20),
             _buildAboutSection(),
             const SizedBox(height: 30),
             _buildLogoutButton(),

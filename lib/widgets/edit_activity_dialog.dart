@@ -396,11 +396,29 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
                               Expanded(
                                 child: TextField(
                                   controller: _activityControllers[index],
+                                  textInputAction: TextInputAction.next,
                                   decoration: InputDecoration(
                                     hintText: 'Activity ${index + 1}',
                                     isDense: true,
                                     border: const OutlineInputBorder(),
+                                    prefixIcon: const Icon(
+                                      Icons.circle,
+                                      size: 10,
+                                    ),
                                   ),
+                                  // ✨ When user presses Enter, create new activity field
+                                  onSubmitted: (value) {
+                                    if (value.trim().isNotEmpty) {
+                                      _addActivityField();
+                                      // ✨ Auto-focus the new field
+                                      Future.delayed(
+                                        const Duration(milliseconds: 100),
+                                        () {
+                                          FocusScope.of(context).requestFocus();
+                                        },
+                                      );
+                                    }
+                                  },
                                 ),
                               ),
                               if (_activityControllers.length > 1)
@@ -418,12 +436,18 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  // COMMENTED OUT: Add Activity button (not needed for single activity)
-                  // OutlinedButton.icon(
-                  //   onPressed: _addActivityField,
-                  //   icon: const Icon(Icons.add),
-                  //   label: const Text('Add Activity'),
-                  // ),
+                  // ✨ Info text about Enter key
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 0),
+                    child: Text(
+                      'Press Enter to add a new activity point',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
                 ],
               ),
       ),

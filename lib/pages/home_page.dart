@@ -11,6 +11,7 @@ import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/services/storage_service.dart'; // ✅ Import for watchdog
 import 'package:beewhere/services/background_geofence_service.dart';
 import 'package:beewhere/services/notification_service.dart';
+import 'package:beewhere/services/logger_service.dart'; // ✨ For on-device debug logs
 import 'package:beewhere/services/location_permission_service.dart';
 import 'package:beewhere/services/pending_sync_service.dart'; // ✨ NEW
 import 'package:beewhere/providers/auth_provider.dart';
@@ -331,13 +332,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // ✨ CALLBACK: When user leaves geofence area or location is disabled
   Future<void> _onUserLeftGeofence(double distance) async {
-    debugPrint(
-      '🔔 _onUserLeftGeofence called with distance: $distance, isClockedIn: $_isClockedIn, isAutoClockingOut: $_isAutoClockingOut',
+    LoggerService.logNotification(
+      '_onUserLeftGeofence called with distance: $distance, isClockedIn: $_isClockedIn, isAutoClockingOut: $_isAutoClockingOut',
     );
 
     // Check if we're still clocked in (prevent duplicate clock-out)
     if (!_isClockedIn) {
-      debugPrint('⚠️ Already clocked out, ignoring auto clock-out trigger');
+      LoggerService.logWithEmoji(
+        '!',
+        'Already clocked out, ignoring auto clock-out trigger',
+      );
       return;
     }
 
@@ -345,14 +349,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // This handles cases where multiple HomePage instances might exist
     // if (!AutoClockOutService.isGloballyProcessing) { ... } -- Service already blocked the call,
     // but we add it here as a safety log.
-    debugPrint(
-      'ℹ️ _onUserLeftGeofence processing start. Global lock should be active.',
+    LoggerService.logWithEmoji(
+      'ℹ️',
+      '_onUserLeftGeofence processing start. Global lock should be active.',
     );
 
     // Check if already processing an auto clock-out
     if (_isAutoClockingOut) {
-      debugPrint(
-        '⚠️ Auto clock-out already in progress, ignoring duplicate trigger',
+      LoggerService.logFailure(
+        'Auto clock-out already in progress, ignoring duplicate trigger',
       );
       return;
     }
@@ -362,19 +367,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     try {
       // ✨ CRITICAL: Stop background service IMMEDIATELY to prevent duplicate triggers
-      debugPrint(
-        '🛑 Stopping background service to prevent duplicate auto clock-out',
+      LoggerService.logGeofenceStop(
+        'Stopping background service to prevent duplicate auto clock-out',
       );
       try {
         await BackgroundGeofenceService.stopTracking();
       } catch (e) {
-        debugPrint('⚠️ Error stopping background service: $e');
+        LoggerService.logFailure('Error stopping background service: $e');
       }
 
       // Special case: distance = -1 means location service was disabled
       if (distance < 0) {
-        debugPrint(
-          '🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Location service DISABLED',
+        LoggerService.logAutoClockOut(
+          'FOREGROUND AUTO CLOCK OUT TRIGGERED! Location service DISABLED',
         );
 
         // ✨ NEW: Immediately update local and database state so background isolate sees us as clocked out
@@ -400,8 +405,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           reason: 'location_disabled',
         );
       } else if (distance == -2.0) {
-        debugPrint(
-          '🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Location permission REVOKED',
+        LoggerService.logAutoClockOut(
+          'FOREGROUND AUTO CLOCK OUT TRIGGERED! Location permission REVOKED',
         );
 
         // ✨ Immediately update state
@@ -428,8 +433,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           reason: 'permission_revoked',
         );
       } else {
-        debugPrint(
-          '🚨 FOREGROUND AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
+        LoggerService.logAutoClockOut(
+          'FOREGROUND AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
         );
 
         // ✨ NEW: Immediately update local and database state so background isolate sees us as clocked out
@@ -515,7 +520,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _initializeData() async {
-    // ✅ FIX: Check server state FIRST to avoid showing stale cache
+    // ✅ CRITICAL FIX: Load attendance profile FIRST
+    // This must happen before _checkExistingClock() which calls _startGeofenceMonitoringForClient()
+    // Otherwise getRadiusForJobType() returns NULL, using default 250m instead of configured range
+    await _loadAttendanceProfile();
+
+    // ✅ FIX: Check server state to avoid showing stale cache
     // This prevents showing "31 hours clocked in" from old cache
     await _checkExistingClock();
 
@@ -523,7 +533,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await _loadCachedData();
 
     await DeviceInfoHelper.init();
-    await _loadAttendanceProfile();
     await _loadDropdownData();
     // Logic moved to _initLocationAndClock to allow UI to build first
 
@@ -594,9 +603,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _loadAttendanceProfile() async {
     final result = await AttendanceProfileApi.getAttendanceProfile(context);
+    debugPrint('📊 AttendanceProfileApi result: $result');
     if (result['success'] && mounted) {
       final provider = Provider.of<AttendanceProvider>(context, listen: false);
       provider.setFromApiResponse(result['data']);
+      debugPrint('✅ AttendanceProvider initialized successfully');
+    } else {
+      debugPrint(
+        '❌ Failed to load attendance profile: ${result['message'] ?? 'Unknown error'}',
+      );
     }
   }
 
@@ -937,11 +952,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // ✨ Get filtered clients based on current job type's geofence setting
     final filteredClients = _getNearbyClients();
 
-    // ✨ Get the configured radius for filtering
+    // ✅ Check if geofence filtering is enabled for this job type
     final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+    final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+    final shouldFilterByGeofence = jobTypeConfig['geofence_filter'] ?? false;
+
+    // ✨ Get the configured radius for filtering (only used if filtering is enabled)
     final configRadius =
         attendance.getRadiusForJobType(_selectedJobType) ??
         GeofenceConfig.clientFilterRadius;
+
+    // debugPrint(
+    //   '📍 [_getClientMarkersForMap] JobType: $_selectedJobType, geofence_filter: $shouldFilterByGeofence, configRadius: $configRadius, filteredClients: ${filteredClients.length}',
+    // );
 
     // Convert to marker data
     final markers = <ClientMarkerData>[];
@@ -950,7 +973,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final locationData = client['LOCATION_DATA'] as List<dynamic>?;
       if (locationData == null || locationData.isEmpty) continue;
 
-      // ✨ NEW: Create a marker for EVERY valid location WITHIN RADIUS
+      // ✨ NEW: Create a marker for EVERY valid location
       for (var location in locationData) {
         final locationGuid = location['LOCATION_GUID'] as String?;
         final clientLat = (location['LATITUDE'] as num?)?.toDouble();
@@ -967,8 +990,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           clientLng,
         );
 
-        // ✨ FIX: Only add marker if location is within radius
-        if (distance <= configRadius) {
+        // ✅ FIX: Only apply distance filter if geofence filtering is enabled
+        // If geofence filtering is disabled, show all markers (matching dropdown behavior)
+        // If geofence filtering is enabled, only show markers within configured radius
+        if (!shouldFilterByGeofence || distance <= configRadius) {
           markers.add(
             ClientMarkerData(
               clientGuid: client['CLIENT_GUID'] as String,
@@ -985,7 +1010,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     }
 
-    // debugPrint('📍 Prepared ${markers.length} client markers for map');
+    // debugPrint(
+    //   '📍 [_getClientMarkersForMap] Created ${markers.length} markers for map display',
+    // );
     return markers;
   }
 
@@ -1003,15 +1030,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     // ✨ Get configured radius for current job type
     final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+
+    // ✅ DEBUG: Log what we're about to look up
+    LoggerService.logGeofenceStart(
+      '[_startGeofenceMonitoringForClient] _selectedJobType: "$_selectedJobType"',
+    );
+
     final configRadius =
         attendance.getRadiusForJobType(_selectedJobType) ??
         GeofenceConfig.autoClockOutRadius;
 
-    debugPrint('🎯 Starting geofence monitoring');
-    debugPrint('   Target: $targetLat, $targetLng');
-    debugPrint('   Radius: ${configRadius}m');
-    debugPrint('   Check interval: 15s');
-    debugPrint('   Required violations: 2');
+    // ✅ DEBUG: Log the result
+    LoggerService.logGeofenceStart(
+      '[_startGeofenceMonitoringForClient] getRadiusForJobType returned: ${attendance.getRadiusForJobType(_selectedJobType)}',
+    );
+
+    LoggerService.logGeofenceStart('Starting geofence monitoring');
+    LoggerService.logWithEmoji('   🎯', 'Target: $targetLat, $targetLng');
+    LoggerService.logDistance('Current radius in service: ${configRadius}m');
+    LoggerService.logWithEmoji('   ⏱️', 'Check interval: 15s');
+    LoggerService.logWithEmoji('   ✓', 'Required violations: 2');
 
     await _autoClockOutService?.startMonitoring(
       targetLat: targetLat,
@@ -2533,11 +2571,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     // Show helpful message when no clients are nearby
     if (label == 'Client' && items.isEmpty) {
-      // ✨ Get configured radius for message
+      // ✨ NEW: Check if geofence filtering is enabled for current job type
       final attendance = Provider.of<AttendanceProvider>(
         context,
         listen: false,
       );
+      final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+      final shouldFilterByGeofence = jobTypeConfig['geofence_filter'] ?? false;
+
+      // ✨ FIX: Don't show "No Clients Nearby" message if geofence filtering is disabled
+      // For Home/Others (geofence_filter=false), we should return all clients when they load
+      // So if items are empty, it's just a loading state - return empty container
+      if (!shouldFilterByGeofence) {
+        return const SizedBox.shrink(); // Return empty space while clients load
+      }
+
+      // ✨ Get configured radius for message (only if filtering is enabled)
       final radius =
           attendance.getRadiusForJobType(_selectedJobType) ??
           GeofenceConfig.clientFilterRadius;
