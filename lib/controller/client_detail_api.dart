@@ -48,7 +48,11 @@ class ClientDetailApi {
         debugPrint('❌ Failed to get cached clients: $cacheError');
       }
 
-      throw Exception('Network error: $e');
+      // ✅ FIX: Return empty list instead of throwing.
+      // Throwing caused _loadDropdownData to catch the error and leave _clients=[],
+      // requiring the user to restart the app to reload the dropdown.
+      debugPrint('⚠️ No clients available (offline + no cache). Returning [].');
+      return [];
     }
   }
 }

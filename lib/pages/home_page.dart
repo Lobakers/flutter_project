@@ -2678,10 +2678,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // Find selected item label
     String displayValue = 'Select $label';
     if (value != null) {
-      final selectedItem = items.firstWhere(
-        (item) => item[valueKey] == value,
-        orElse: () => null,
-      );
+      // ✅ FIX: Use where+firstOrNull instead of firstWhere(orElse: () => null)
+      // orElse must return Map<String, dynamic>, not null (Dart null safety).
+      // This was causing a grey-screen crash when going offline with a selected client.
+      final selectedItem = items
+          .cast<Map<String, dynamic>>()
+          .where((item) => item[valueKey] == value)
+          .firstOrNull;
       if (selectedItem != null) {
         displayValue = selectedItem[labelKey] ?? '';
       }

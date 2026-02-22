@@ -50,7 +50,9 @@ class ProjectApi {
         debugPrint('❌ Failed to get cached projects: $cacheError');
       }
 
-      throw Exception('Network error: $e');
+      // ✅ FIX: Return empty list instead of throwing.
+      debugPrint('⚠️ No projects available (offline + no cache). Returning [].');
+      return [];
     }
   }
 }

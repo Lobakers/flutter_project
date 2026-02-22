@@ -50,7 +50,9 @@ class ContractApi {
         debugPrint('❌ Failed to get cached contracts: $cacheError');
       }
 
-      throw Exception('Network error: $e');
+      // ✅ FIX: Return empty list instead of throwing.
+      debugPrint('⚠️ No contracts available (offline + no cache). Returning [].');
+      return [];
     }
   }
 }
