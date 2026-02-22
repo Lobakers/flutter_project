@@ -248,6 +248,11 @@ class SyncService {
             await PendingSyncService.removePendingAction(actionId);
             _syncedCount++;
             LoggerService.info('✅ Synced action $actionId', tag: 'SyncService');
+            
+            // ✨ FIX: Add a 1-second delay after EVERY successful action
+            // This prevents the server from receiving multiple requests in the exact same second
+            // and getting sorted incorrectly due to identical timestamps or parallel processing
+            await Future.delayed(const Duration(seconds: 1));
           } else {
             // Increment retry count
             await PendingSyncService.incrementRetry(actionId, 'Sync failed');
