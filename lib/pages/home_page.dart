@@ -217,10 +217,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
       ConnectivityResult result,
     ) {
+      final wasOnline = _isOnline;
+      final isNowOnline = result != ConnectivityResult.none;
+
       if (mounted) {
         setState(() {
-          _isOnline = result != ConnectivityResult.none;
+          _isOnline = isNowOnline;
         });
+      }
+
+      // FIX: Only re-sync with server when connection is RESTORED (offline -> online).
+      // When going offline, we preserve the current in-memory clock state as-is.
+      // This prevents the UI from resetting to "not clocked in" on connectivity loss.
+      if (!wasOnline && isNowOnline) {
+        debugPrint('📡 Connection restored — syncing clock status with server...');
+        _checkExistingClock();
       }
     });
   }
@@ -721,6 +732,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         });
         _autoClockOutService?.stopMonitoring();
       }
+    } else if (!result['success']) {
+      // ✅ FIX: API call failed (e.g. network error during connectivity transition).
+      // Do NOT reset the UI — preserve whatever clock state is already in memory.
+      // When the user is clocked in and loses connection, this keeps the UI correctly
+      // showing "Clocked In" instead of resetting to "not clocked in".
+      debugPrint(
+        '⚠️ getLatestClock failed (${result['message'] ?? 'unknown error'}). '
+        'Preserving in-memory clock state (_isClockedIn: $_isClockedIn).',
+      );
     }
   }
 
