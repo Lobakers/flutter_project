@@ -84,7 +84,11 @@ class PendingSyncService {
     final db = await _getDb();
 
     try {
-      final results = await db.query('pending_sync', orderBy: 'created_at ASC');
+      // ✨ FIX: Sort by Auto-Increment ID to guarantee absolute insertion order.
+      // Sorting by created_at string can sometimes mix up rapidly inserted actions
+      // (like clicking clock in then clock out in the same second), causing
+      // the server to receive clock out before clock in.
+      final results = await db.query('pending_sync', orderBy: 'id ASC');
 
       return results.map((row) {
         return {
