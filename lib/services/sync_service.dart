@@ -84,11 +84,14 @@ class SyncService {
 
         // ✨ NEW: Exponential Backoff Check
         if (!_shouldRetry(action)) {
-          LoggerService.info(
-            '⏳ Skipping action $actionId due to exponential backoff (Retry Count: ${action['retry_count']})',
+          // ✨ CRITICAL FIX: If an action is skipped due to backoff, we MUST abort the entire sync.
+          // Otherwise, we might skip a clock-in and successfully sync the subsequent clock-out,
+          // breaking chronological order on the server.
+          LoggerService.warning(
+            '⏳ Action $actionId is in backoff (Retry Count: ${action['retry_count']}). Aborting sync to preserve strict chronological order.',
             tag: 'SyncService',
           );
-          continue;
+          break;
         }
 
         final actionType = action['action_type'];
@@ -250,18 +253,24 @@ class SyncService {
             await PendingSyncService.incrementRetry(actionId, 'Sync failed');
             _failedCount++;
             LoggerService.error(
-              '❌ Failed to sync action $actionId',
+              '❌ Failed to sync action $actionId. Aborting sync loop to preserve strict chronological order.',
               tag: 'SyncService',
             );
+            // ✨ CRITICAL FIX: Break the loop on failure.
+            // We MUST NOT sync subsequent actions if a previous one fails,
+            // otherwise we could send a clock-out before its clock-in.
+            break;
           }
         } catch (e) {
           await PendingSyncService.incrementRetry(actionId, e.toString());
           _failedCount++;
           LoggerService.error(
-            'Error syncing action $actionId',
+            'Error syncing action $actionId. Aborting sync loop to preserve strict chronological order.',
             tag: 'SyncService',
             error: e,
           );
+          // ✨ CRITICAL FIX: Break the loop on exception.
+          break;
         }
       }
 
