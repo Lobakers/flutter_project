@@ -782,6 +782,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _latitude = position.latitude;
       _longitude = position.longitude;
 
+      // ✨ FIX: Start the live 5m tracking stream now that we have permissions
+      // On fresh install, the stream in initState fails because permissions aren't granted yet.
+      _startLocationStream();
+
       // 🧪 DEBUG: Print your real lat/long - COPY THIS TO testMode!
       debugPrint('═══════════════════════════════════════════');
       debugPrint(
