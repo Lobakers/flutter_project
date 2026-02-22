@@ -1017,6 +1017,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _startGeofenceMonitoringForClient(String? clientGuid) async {
+    // ✨ NEW: Check if auto clock-out is enabled for this job type
+    final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+    final isAutoClockOutEnabled = attendance.isAutoClockOutEnabledForJobType(
+      _selectedJobType,
+    );
+
+    if (!isAutoClockOutEnabled) {
+      LoggerService.logGeofenceStop(
+        '[_startGeofenceMonitoringForClient] Auto clock-out DISABLED for $_selectedJobType (geofence monitoring not started)',
+      );
+      return; // Skip geofence monitoring if auto clock-out is disabled
+    }
+
     // Use user's current location as geofence center (where they clocked in)
     // This way, auto clock-out triggers when they move 500m from their clock-in position
     final targetLat = _latitude;
@@ -1029,7 +1042,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
 
     // ✨ Get configured radius for current job type
-    final attendance = Provider.of<AttendanceProvider>(context, listen: false);
 
     // ✅ DEBUG: Log what we're about to look up
     LoggerService.logGeofenceStart(
@@ -1062,6 +1074,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// Start background tracking for auto clock-out when app is closed
   Future<void> _startBackgroundTracking() async {
     try {
+      // ✨ NEW: Check if auto clock-out is enabled for this job type
+      final attendance = Provider.of<AttendanceProvider>(
+        context,
+        listen: false,
+      );
+      final isAutoClockOutEnabled = attendance.isAutoClockOutEnabledForJobType(
+        _selectedJobType,
+      );
+
+      if (!isAutoClockOutEnabled) {
+        LoggerService.warning(
+          'Auto clock-out DISABLED for $_selectedJobType (background tracking not started)',
+          tag: 'BackgroundTracking',
+        );
+        return; // Skip background tracking if auto clock-out is disabled
+      }
+
       // Request notification permission
       final notificationGranted =
           await NotificationService.requestPermissions();
@@ -1085,10 +1114,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
 
       // ✨ Get configured radius for current job type
-      final attendance = Provider.of<AttendanceProvider>(
-        context,
-        listen: false,
-      );
       final configRadius =
           attendance.getRadiusForJobType(_selectedJobType) ??
           GeofenceConfig.autoClockOutRadius;

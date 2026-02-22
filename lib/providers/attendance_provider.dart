@@ -42,6 +42,12 @@ class AttendanceProvider with ChangeNotifier {
   double? siteAutoClockOutRange;
   double? homeAutoClockOutRange;
   double? othersAutoClockOutRange;
+
+  // ✨ New: Track if auto clock-out is ENABLED for each job type
+  bool officeAutoClockOutEnabled = false;
+  bool siteAutoClockOutEnabled = false;
+  bool homeAutoClockOutEnabled = false;
+  bool othersAutoClockOutEnabled = false;
   void setFromApiResponse(Map<String, dynamic> data) {
     final property = data['property'];
 
@@ -177,6 +183,12 @@ class AttendanceProvider with ChangeNotifier {
     homeAutoClockOutRange = null;
     othersAutoClockOutRange = null;
 
+    // ✨ Reset enabled flags
+    officeAutoClockOutEnabled = false;
+    siteAutoClockOutEnabled = false;
+    homeAutoClockOutEnabled = false;
+    othersAutoClockOutEnabled = false;
+
     notifyListeners();
   }
 
@@ -185,37 +197,57 @@ class AttendanceProvider with ChangeNotifier {
     if (property['office'] != null &&
         property['office']['autoclockout_filter'] != null &&
         property['office']['autoclockout_filter']['value'] == true) {
+      officeAutoClockOutEnabled = true;
       officeAutoClockOutRange =
           (property['office']['autoclockout_filter']['range'] as num?)
               ?.toDouble();
-      debugPrint('📏 Office auto clock-out range: $officeAutoClockOutRange m');
+      debugPrint(
+        '📏 Office auto clock-out ENABLED - range: $officeAutoClockOutRange m',
+      );
+    } else {
+      officeAutoClockOutEnabled = false;
     }
 
     if (property['site'] != null &&
         property['site']['autoclockout_filter'] != null &&
         property['site']['autoclockout_filter']['value'] == true) {
+      siteAutoClockOutEnabled = true;
       siteAutoClockOutRange =
           (property['site']['autoclockout_filter']['range'] as num?)
               ?.toDouble();
-      debugPrint('📏 Site auto clock-out range: $siteAutoClockOutRange m');
+      debugPrint(
+        '📏 Site auto clock-out ENABLED - range: $siteAutoClockOutRange m',
+      );
+    } else {
+      siteAutoClockOutEnabled = false;
     }
 
     if (property['home'] != null &&
         property['home']['autoclockout_filter'] != null &&
         property['home']['autoclockout_filter']['value'] == true) {
+      homeAutoClockOutEnabled = true;
       homeAutoClockOutRange =
           (property['home']['autoclockout_filter']['range'] as num?)
               ?.toDouble();
-      debugPrint('📏 Home auto clock-out range: $homeAutoClockOutRange m');
+      debugPrint(
+        '📏 Home auto clock-out ENABLED - range: $homeAutoClockOutRange m',
+      );
+    } else {
+      homeAutoClockOutEnabled = false;
     }
 
     if (property['others'] != null &&
         property['others']['autoclockout_filter'] != null &&
         property['others']['autoclockout_filter']['value'] == true) {
+      othersAutoClockOutEnabled = true;
       othersAutoClockOutRange =
           (property['others']['autoclockout_filter']['range'] as num?)
               ?.toDouble();
-      debugPrint('📏 Others auto clock-out range: $othersAutoClockOutRange m');
+      debugPrint(
+        '📏 Others auto clock-out ENABLED - range: $othersAutoClockOutRange m',
+      );
+    } else {
+      othersAutoClockOutEnabled = false;
     }
   }
 
@@ -232,6 +264,22 @@ class AttendanceProvider with ChangeNotifier {
         return othersAutoClockOutRange;
       default:
         return null;
+    }
+  }
+
+  /// ✨ NEW: Check if auto clock-out is ENABLED for a job type
+  bool isAutoClockOutEnabledForJobType(String jobType) {
+    switch (jobType.toLowerCase()) {
+      case 'office':
+        return officeAutoClockOutEnabled;
+      case 'site':
+        return siteAutoClockOutEnabled;
+      case 'home':
+        return homeAutoClockOutEnabled;
+      case 'others':
+        return othersAutoClockOutEnabled;
+      default:
+        return false;
     }
   }
 }
