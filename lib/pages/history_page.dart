@@ -114,11 +114,13 @@ class _HistoryPageState extends State<HistoryPage> {
   // ⚡ NEW: Refresh from API in background (non-blocking)
   void _refreshHistoryFromApi() {
     // Fire-and-forget API call - doesn't block UI
-    _loadHistory().then((_) {
-      debugPrint('✅ History refreshed from API');
-    }).catchError((e) {
-      debugPrint('⚠️ Failed to refresh history from API: $e');
-    });
+    _loadHistory()
+        .then((_) {
+          debugPrint('✅ History refreshed from API');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Failed to refresh history from API: $e');
+        });
   }
 
   Future<void> _loadHistory() async {
@@ -362,8 +364,8 @@ class _HistoryPageState extends State<HistoryPage> {
                 ? _buildErrorView()
                 : _records.isEmpty
                 ? _isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _buildEmptyView()
+                      ? const Center(child: CircularProgressIndicator())
+                      : _buildEmptyView()
                 : _buildHistoryList(),
           ),
         ],
