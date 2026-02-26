@@ -59,6 +59,7 @@ class LoggerService {
       _database = await openDatabase(
         dbPath,
         version: 1,
+        singleInstance: false, // ✨ Fix cross-isolate closure
         onCreate: (Database db, int version) async {
           await db.execute('''
             CREATE TABLE logs (

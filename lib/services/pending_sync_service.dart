@@ -1,3 +1,4 @@
+import 'dart:async'; // ✨ ADDED FOR STREAM CONTROLLER
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -11,6 +12,11 @@ class PendingSyncService {
   static Database? _database;
   static bool _isInitialized = false;
 
+  // ✨ Stream for triggering UI updates on pending sync changes
+  static final StreamController<void> _onChangeController =
+      StreamController<void>.broadcast();
+  static Stream<void> get onChange => _onChangeController.stream;
+
   /// Initialize the pending sync database
   static Future<void> init() async {
     if (_isInitialized) return;
@@ -22,6 +28,7 @@ class PendingSyncService {
       _database = await openDatabase(
         dbPath,
         version: 1,
+        singleInstance: false, // ✨ Prevent cross-isolate closure
         onCreate: (Database db, int version) async {
           await db.execute('''
             CREATE TABLE pending_sync (
@@ -73,6 +80,7 @@ class PendingSyncService {
         'retry_count': 0,
       });
 
+      _onChangeController.add(null); // ✨ NOTIFY LISTENERS
       debugPrint('✅ Added pending action: $actionType');
     } catch (e) {
       debugPrint('❌ Failed to add pending action: $e');
@@ -128,6 +136,7 @@ class PendingSyncService {
     try {
       await db.delete('pending_sync', where: 'id = ?', whereArgs: [id]);
 
+      _onChangeController.add(null); // ✨ NOTIFY LISTENERS
       debugPrint('✅ Removed pending action: $id');
     } catch (e) {
       debugPrint('❌ Failed to remove pending action: $e');
@@ -178,6 +187,7 @@ class PendingSyncService {
 
     try {
       await db.delete('pending_sync');
+      _onChangeController.add(null); // ✨ NOTIFY LISTENERS
       debugPrint('✅ Cleared all pending actions');
     } catch (e) {
       debugPrint('❌ Failed to clear pending actions: $e');
@@ -189,5 +199,6 @@ class PendingSyncService {
     await _database?.close();
     _database = null;
     _isInitialized = false;
+    _onChangeController.close();
   }
 }

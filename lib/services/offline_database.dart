@@ -19,28 +19,10 @@ class OfflineDatabase {
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String dbPath = join(appDocDir.path, 'beewhere_offline.db');
 
-      // ✨ NEW: Integrity Check on initialization
-      final dbExists = await databaseExists(dbPath);
-      if (dbExists) {
-        final checkDb = await openDatabase(dbPath);
-        final List<Map<String, dynamic>> integrity = await checkDb.rawQuery(
-          'PRAGMA integrity_check',
-        );
-        await checkDb.close();
-
-        if (integrity.isNotEmpty &&
-            integrity.first['integrity_check'] != 'ok') {
-          debugPrint('❌ Database integrity check FAILED: $integrity');
-          debugPrint('🧹 Attempting safe recovery by deleting corrupted DB');
-          await deleteDatabase(dbPath);
-        } else {
-          debugPrint('✅ Database integrity check passed');
-        }
-      }
-
       _database = await openDatabase(
         dbPath,
         version: 1,
+        singleInstance: false, // ✨ Prevent cross-isolate closure
         onCreate: (Database db, int version) async {
           // Attendance History Table
           await db.execute('''
@@ -148,6 +130,30 @@ class OfflineDatabase {
         },
       );
 
+      // ✨ Integrity Check after initialization
+      try {
+        final List<Map<String, dynamic>> integrity = await _database!.rawQuery(
+          'PRAGMA integrity_check',
+        );
+        if (integrity.isNotEmpty &&
+            integrity.first['integrity_check'] != 'ok') {
+          debugPrint('❌ Database integrity check FAILED: $integrity');
+          debugPrint('🧹 Attempting safe recovery by deleting corrupted DB');
+
+          await _database!.close();
+          await deleteDatabase(dbPath);
+
+          // Re-initialize after deletion
+          _isInitialized = false;
+          await init();
+          return;
+        } else {
+          debugPrint('✅ Database integrity check passed');
+        }
+      } catch (checkError) {
+        debugPrint('⚠️ DB Integrity check skipped (Error: $checkError)');
+      }
+
       _isInitialized = true;
       debugPrint('✅ OfflineDatabase initialized');
     } catch (e) {
@@ -157,10 +163,24 @@ class OfflineDatabase {
 
   /// ✨ Auto-healing database getter
   /// Re-initializes if database is null or closed
+  /// Throws a StateError if the DB cannot be opened after retry.
   static Future<Database> _getDb() async {
     if (_database == null || !_database!.isOpen) {
       _isInitialized = false;
       await init();
+
+      // If still not open after init, retry once after brief delay
+      if (_database == null || !_database!.isOpen) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        _isInitialized = false;
+        await init();
+      }
+
+      if (_database == null || !_database!.isOpen) {
+        throw StateError(
+          'OfflineDatabase: failed to open database after retry',
+        );
+      }
     }
     return _database!;
   }
@@ -244,9 +264,9 @@ class OfflineDatabase {
 
   /// Save latest clock status
   static Future<void> saveClockStatus(Map<String, dynamic> status) async {
-    final db = await _getDb();
-
     try {
+      final db = await _getDb();
+
       final isClockedIn = status['isClockedIn'] == true ? 1 : 0;
 
       debugPrint(
@@ -275,9 +295,9 @@ class OfflineDatabase {
 
   /// Get cached clock status
   static Future<Map<String, dynamic>?> getClockStatus() async {
-    final db = await _getDb();
-
     try {
+      final db = await _getDb();
+
       final results = await db.query(
         'clock_status',
         where: 'id = ?',

@@ -88,6 +88,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _isOnline = true;
   int _pendingSyncCount = 0; // ✨ NEW: Track pending actions for UI badge
   StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+  StreamSubscription<void>?
+  _pendingSyncSubscription; // ✨ Stream for pending syncs
 
   double? _currentUserLat;
   double? _currentUserLng;
@@ -125,6 +127,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _startTimers();
     _startLocationStream(); // ✨ Start real-time stream
     _initConnectivityListener();
+
+    // ✨ Dynamically update UI when pending sync actions change
+    _pendingSyncSubscription = PendingSyncService.onChange.listen((_) async {
+      final previousCount = _pendingSyncCount;
+      await _loadPendingSyncCount();
+      
+      // ✨ FIX: When all pending syncs complete (count drops to 0), refresh clock status
+      // This ensures UI updates after offline actions sync to server
+      if (previousCount > 0 && _pendingSyncCount == 0 && mounted) {
+        debugPrint('✅ All pending syncs completed, refreshing clock status from server...');
+        // Small delay to ensure server has processed the sync
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted) {
+          await _checkExistingClock();
+        }
+      }
+    });
 
     // ✨ Request background location permission on startup
     // Use addPostFrameCallback to ensure context is valid for showing dialogs
@@ -230,7 +249,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       // When going offline, we preserve the current in-memory clock state as-is.
       // This prevents the UI from resetting to "not clocked in" on connectivity loss.
       if (!wasOnline && isNowOnline) {
-        debugPrint('📡 Connection restored — syncing clock status with server...');
+        debugPrint(
+          '📡 Connection restored — syncing clock status with server...',
+        );
         _checkExistingClock();
       }
     });
@@ -293,9 +314,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _activityController.dispose();
     _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
     _connectivitySubscription?.cancel();
+    _pendingSyncSubscription?.cancel(); // ✨ Cancel sync subscription
     WidgetsBinding.instance.removeObserver(this); // ✨ Remove lifecycle observer
 
     super.dispose();
+  }
+
+  Future<void> _loadPendingSyncCount() async {
+    try {
+      final count = await PendingSyncService.getPendingCount();
+      if (mounted) {
+        setState(() {
+          _pendingSyncCount = count;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error refreshing pending count: $e');
+    }
   }
 
   StreamSubscription<Position>?
