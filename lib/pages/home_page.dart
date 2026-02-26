@@ -96,6 +96,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   double? _lastDistance;
   int? _lastViolationCount;
 
+  // ⚡ Location caching state (to throttle cache writes)
+  double? _lastCachedLat;
+  double? _lastCachedLng;
+
   @override
   void initState() {
     super.initState();
@@ -132,11 +136,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _pendingSyncSubscription = PendingSyncService.onChange.listen((_) async {
       final previousCount = _pendingSyncCount;
       await _loadPendingSyncCount();
-      
+
       // ✨ FIX: When all pending syncs complete (count drops to 0), refresh clock status
       // This ensures UI updates after offline actions sync to server
       if (previousCount > 0 && _pendingSyncCount == 0 && mounted) {
-        debugPrint('✅ All pending syncs completed, refreshing clock status from server...');
+        debugPrint(
+          '✅ All pending syncs completed, refreshing clock status from server...',
+        );
         // Small delay to ensure server has processed the sync
         await Future.delayed(const Duration(milliseconds: 500));
         if (mounted) {
@@ -361,6 +367,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     '${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}';
               });
 
+              // ⚡ Cache location periodically (every 50m movement to reduce writes)
+              // This ensures map shows quickly on next page load
+              if (_shouldCacheLocation(position)) {
+                StorageService.saveLastLocation(
+                  latitude: position.latitude,
+                  longitude: position.longitude,
+                  address: _currentAddress,
+                ).catchError((e) => debugPrint('Failed to cache location: $e'));
+              }
+
               // 🧪 DEBUG: Print your real lat/long
               // debugPrint(
               //   '📍 Stream Location: ${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}',
@@ -509,19 +525,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  // ✨ LOAD CACHED DATA FOR INSTANT UI
+  // ✨ LOAD CACHED DATA FOR INSTANT UI (Optimized - always load cache first)
   Future<void> _loadCachedData() async {
-    // 1. Load Clock Status (only if not already loaded from server)
-    try {
-      // ✅ FIX: Don't overwrite server data with stale cache
-      if (_clockRefGuid != null) {
-        debugPrint('⏭️ Skipping cache load - server data already loaded');
-        return;
-      }
+    // ⚡ PERFORMANCE: Load cache UNCONDITIONALLY for instant UI
+    // This gives "offline mode" speed even when online
+    // Server data will overwrite cache in background
 
+    // 1. Load Clock Status from cache
+    try {
       final cachedClock = await OfflineDatabase.getClockStatus();
       if (cachedClock != null && mounted) {
-        debugPrint('📱 Loaded clock status from cache');
+        debugPrint('⚡ Loaded clock status from cache (instant UI)');
         setState(() {
           _isClockedIn = cachedClock['isClockedIn'] == true;
           if (_isClockedIn) {
@@ -544,7 +558,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       debugPrint('Error loading cached clock status: $e');
     }
 
-    // 2. Load Dropdowns
+    // 2. Load Dropdowns from cache
     try {
       final cachedClients = await OfflineDatabase.getClients();
       final cachedProjects = await OfflineDatabase.getProjects();
@@ -557,30 +571,60 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           if (cachedContracts.isNotEmpty) _contracts = cachedContracts;
         });
         debugPrint(
-          '📱 Loaded dropdowns from cache: ${_clients.length} clients',
+          '⚡ Loaded dropdowns from cache: ${_clients.length} clients (instant UI)',
         );
       }
     } catch (e) {
       debugPrint('Error loading cached dropdowns: $e');
     }
+
+    // 3. Load last known location for instant map display
+    try {
+      final cachedLocation = await StorageService.getLastLocation();
+      if (cachedLocation != null && mounted) {
+        final lat = cachedLocation['latitude'] as double?;
+        final lng = cachedLocation['longitude'] as double?;
+        final address = cachedLocation['address'] as String?;
+
+        if (lat != null && lng != null) {
+          setState(() {
+            _latitude = lat;
+            _longitude = lng;
+            _currentAddress = address ?? 'Cached location';
+          });
+          // Set as last cached position to avoid immediate re-caching
+          _lastCachedLat = lat;
+          _lastCachedLng = lng;
+          debugPrint(
+            '⚡ Loaded location from cache for instant map (📍 $lat, $lng)',
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading cached location: $e');
+    }
   }
 
   Future<void> _initializeData() async {
-    // ✅ CRITICAL FIX: Load attendance profile FIRST
-    // This must happen before _checkExistingClock() which calls _startGeofenceMonitoringForClient()
-    // Otherwise getRadiusForJobType() returns NULL, using default 250m instead of configured range
+    // ⚡ PERFORMANCE OPTIMIZATION: Load cache FIRST for instant UI
+    // This gives "offline mode" speed - user sees data immediately
+    // Then API calls refresh data in background
+
+    debugPrint('⚡ Step 1: Loading cached data for instant UI...');
+    await _loadCachedData(); // ⚡ INSTANT UI - show cache first
+
+    debugPrint('⚡ Step 2: Refreshing from API in background...');
+    // Now refresh from API in background (user already sees cached data)
+    // Don't block on these - let them run and update UI progressively
+
+    // ✅ CRITICAL: Load attendance profile FIRST (needed for geofence config)
     await _loadAttendanceProfile();
 
-    // ✅ FIX: Check server state to avoid showing stale cache
-    // This prevents showing "31 hours clocked in" from old cache
-    await _checkExistingClock();
+    // Fire off API calls without blocking (they'll update UI when ready)
+    _refreshDataFromApi();
 
-    // ✨ Load cache FIRST for instant feedback (if server check failed)
-    await _loadCachedData();
-
+    // Quick init tasks
     await DeviceInfoHelper.init();
-    await _loadDropdownData();
-    // Logic moved to _initLocationAndClock to allow UI to build first
 
     // ✨ Update pending sync count
     try {
@@ -591,6 +635,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('⚠️ Error updating pending count: $e');
     }
+  }
+
+  // ⚡ NEW: Refresh data from API without blocking
+  Future<void> _refreshDataFromApi() async {
+    // Run API calls in background, update UI as each completes
+    // User already sees cached data, so no blocking needed
+
+    // 1. Check clock status from server
+    _checkExistingClock()
+        .then((_) {
+          debugPrint('✅ Clock status refreshed from API');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Failed to refresh clock status: $e');
+        });
+
+    // 2. Refresh dropdown data
+    _loadDropdownData()
+        .then((_) {
+          debugPrint('✅ Dropdowns refreshed from API');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Failed to refresh dropdowns: $e');
+        });
   }
 
   // ✨ NEW: Handle permissions, location, and clock status after frame build
@@ -841,7 +909,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           });
           _showDialog(
             'Invalid Location',
-            'Mock location detected. Please disable any GPS spoofing apps and try again.\n\nThis is a security measure to prevent fraudulent clock-ins.',
+            'Mock location detected. Please disable any GPS spoofing apps and try again.\\n\\nThis is a security measure to prevent fraudulent clock-ins.',
           );
         }
         return;
@@ -851,6 +919,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final coordinates =
           '${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}';
       if (mounted) setState(() => _currentAddress = coordinates);
+
+      // ⚡ Cache location for instant map display on next load
+      _lastCachedLat = _latitude;
+      _lastCachedLng = _longitude;
+      await StorageService.saveLastLocation(
+        latitude: _latitude!,
+        longitude: _longitude!,
+        address: coordinates,
+      );
+      debugPrint('⚡ Cached location for next page load');
     } catch (e) {
       debugPrint('Location error: $e');
       if (mounted) setState(() => _currentAddress = "Failed to get location");
@@ -2008,6 +2086,34 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+
+  /// ⚡ Determine if we should cache the location (throttle writes)
+  /// Only cache if moved more than 50 meters from last cached position
+  bool _shouldCacheLocation(Position position) {
+    // First time - always cache
+    if (_lastCachedLat == null || _lastCachedLng == null) {
+      _lastCachedLat = position.latitude;
+      _lastCachedLng = position.longitude;
+      return true;
+    }
+
+    // Calculate distance from last cached position
+    final distance = Geolocator.distanceBetween(
+      _lastCachedLat!,
+      _lastCachedLng!,
+      position.latitude,
+      position.longitude,
+    );
+
+    // Only cache if moved more than 50 meters (reduces storage writes)
+    if (distance > 50) {
+      _lastCachedLat = position.latitude;
+      _lastCachedLng = position.longitude;
+      return true;
+    }
+
+    return false;
+  }
 
   /// Parse clock time string to DateTime object
   DateTime? _parseClockInTime(String? timeString) {

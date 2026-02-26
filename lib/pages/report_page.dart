@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:beewhere/controller/report_api.dart';
+import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/widgets/drawer.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:flutter/material.dart';
@@ -44,6 +45,67 @@ class _ReportPageState extends State<ReportPage> {
     // Initialize with current month
     _calculateDateRange();
     _initConnectivityListener();
+
+    // ⚡ PERFORMANCE: Try to load cached report if available
+    _loadCachedReport();
+  }
+
+  // ⚡ NEW: Load cached report for instant UI
+  Future<void> _loadCachedReport() async {
+    if (_startDate == null || _endDate == null) return;
+
+    try {
+      final startTimestamp = _startDate!.millisecondsSinceEpoch ~/ 1000;
+      final endTimestamp = _endDate!.millisecondsSinceEpoch ~/ 1000;
+
+      final cachedData = await OfflineDatabase.getReportData(
+        reportType: _reportType,
+        startTimestamp: startTimestamp,
+        endTimestamp: endTimestamp,
+      );
+
+      if (cachedData != null && mounted) {
+        setState(() {
+          _reportData = cachedData is List ? cachedData : [cachedData];
+
+          // ⚡ FIX: Parse date strings to DateTime objects (same as _fetchReportData)
+          // When data is loaded from cache, dates are strings from JSON serialization
+          if (_reportType == 'attendance') {
+            for (var item in _reportData) {
+              // Parse inTime if it's a string
+              if (item['inTime'] != null && item['inTime'] is String) {
+                try {
+                  item['inTime'] = DateTime.parse(
+                    item['inTime'].toString().replaceAll('/', '-'),
+                  );
+                } catch (e) {
+                  debugPrint('Error parsing cached inTime: $e');
+                  item['inTime'] = null;
+                }
+              }
+              // Parse outTime if it's a string
+              if (item['outTime'] != null && item['outTime'] is String) {
+                try {
+                  item['outTime'] = DateTime.parse(
+                    item['outTime'].toString().replaceAll('/', '-'),
+                  );
+                } catch (e) {
+                  debugPrint('Error parsing cached outTime: $e');
+                  item['outTime'] = null;
+                }
+              }
+            }
+          }
+
+          _genReport = true; // Show cached report immediately
+        });
+        debugPrint(
+          '⚡ Loaded cached report data (instant UI) - ${_reportData.length} items',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading cached report: $e');
+    }
   }
 
   void _initConnectivityListener() {
@@ -174,6 +236,25 @@ class _ReportPageState extends State<ReportPage> {
 
     // Automatically fetch data for new period
     _fetchReportData();
+  }
+
+  /// ⚡ Helper: Safely format time value (handles both DateTime and String)
+  String _formatTime(dynamic timeValue) {
+    if (timeValue == null) return '-N/A-';
+
+    try {
+      if (timeValue is DateTime) {
+        return DateFormat('hh:mm a').format(timeValue);
+      } else if (timeValue is String) {
+        // Try to parse string to DateTime first
+        final dateTime = DateTime.parse(timeValue.replaceAll('/', '-'));
+        return DateFormat('hh:mm a').format(dateTime);
+      }
+      return '-N/A-';
+    } catch (e) {
+      debugPrint('Error formatting time: $e');
+      return '-N/A-';
+    }
   }
 
   /// Show report based on current filters
@@ -701,7 +782,7 @@ class _ReportPageState extends State<ReportPage> {
                           ),
                           child: Text(
                             item['inTime'] != null
-                                ? DateFormat('hh:mm a').format(item['inTime'])
+                                ? _formatTime(item['inTime'])
                                 : '-N/A-',
                             style: TextStyle(
                               fontSize: 13,
@@ -732,7 +813,7 @@ class _ReportPageState extends State<ReportPage> {
                           ),
                           child: Text(
                             item['outTime'] != null
-                                ? DateFormat('hh:mm a').format(item['outTime'])
+                                ? _formatTime(item['outTime'])
                                 : '-N/A-',
                             style: TextStyle(
                               fontSize: 13,

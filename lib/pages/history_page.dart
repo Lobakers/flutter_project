@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:beewhere/controller/history_api.dart';
+import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:beewhere/widgets/drawer.dart';
@@ -50,8 +51,13 @@ class _HistoryPageState extends State<HistoryPage> {
     _startDate = _endDate!.subtract(const Duration(days: 30));
 
     _scrollController.addListener(_onScroll);
-    _loadHistory();
     _initConnectivityListener();
+
+    // ⚡ PERFORMANCE: Load cache first for instant UI
+    _loadCachedHistory();
+
+    // Then refresh from API in background (non-blocking)
+    _refreshHistoryFromApi();
   }
 
   void _initConnectivityListener() {
@@ -84,17 +90,48 @@ class _HistoryPageState extends State<HistoryPage> {
     }
   }
 
+  // ⚡ NEW: Load cached history for instant UI
+  Future<void> _loadCachedHistory() async {
+    try {
+      final cachedRecords = await OfflineDatabase.getAttendanceHistory(
+        limit: 100, // Load more from cache for instant display
+      );
+
+      if (cachedRecords.isNotEmpty && mounted) {
+        setState(() {
+          _records = cachedRecords;
+          _totalHours = HistoryApi.calculateTotalHours(_records);
+        });
+        debugPrint(
+          '⚡ Loaded ${cachedRecords.length} history records from cache (instant UI)',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading cached history: $e');
+    }
+  }
+
+  // ⚡ NEW: Refresh from API in background (non-blocking)
+  void _refreshHistoryFromApi() {
+    // Fire-and-forget API call - doesn't block UI
+    _loadHistory().then((_) {
+      debugPrint('✅ History refreshed from API');
+    }).catchError((e) {
+      debugPrint('⚠️ Failed to refresh history from API: $e');
+    });
+  }
+
   Future<void> _loadHistory() async {
     if (!mounted) return;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
 
-      // ✅ Reset cumulative counters
+      // ✅ Reset cumulative counters (but don't clear _records - keep cache visible)
       _currentLimit = 5;
       _previousRecordCount = 0;
 
-      _records = [];
+      // Don't clear _records - keep cached data visible during refresh
       _hasMore = true;
     });
 
@@ -321,12 +358,12 @@ class _HistoryPageState extends State<HistoryPage> {
         children: [
           _buildSummaryCard(),
           Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _errorMessage != null
+            child: _errorMessage != null
                 ? _buildErrorView()
                 : _records.isEmpty
-                ? _buildEmptyView()
+                ? _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _buildEmptyView()
                 : _buildHistoryList(),
           ),
         ],

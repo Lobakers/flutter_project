@@ -10,6 +10,7 @@ class StorageService {
   static const String _keyToken = 'auth_token';
   static const String _keyUserInfo = 'user_info';
   static const String _keyClockInState = 'clock_in_state';
+  static const String _keyLastLocation = 'last_location';
 
   /// Save JWT token securely
   static Future<void> saveToken(String token) async {
@@ -106,5 +107,33 @@ class StorageService {
   static Future<bool> hasStoredCredentials() async {
     final token = await getToken();
     return token != null && token.isNotEmpty;
+  }
+
+  /// Save last known location for instant map display
+  static Future<void> saveLastLocation({
+    required double latitude,
+    required double longitude,
+    required String address,
+  }) async {
+    final location = {
+      'latitude': latitude,
+      'longitude': longitude,
+      'address': address,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+    final jsonString = jsonEncode(location);
+    await _storage.write(key: _keyLastLocation, value: jsonString);
+  }
+
+  /// Get last known location
+  static Future<Map<String, dynamic>?> getLastLocation() async {
+    final jsonString = await _storage.read(key: _keyLastLocation);
+    if (jsonString == null) return null;
+
+    try {
+      return jsonDecode(jsonString) as Map<String, dynamic>;
+    } catch (e) {
+      return null;
+    }
   }
 }
