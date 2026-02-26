@@ -23,8 +23,9 @@ class ApiService {
   static Future<http.Response> post(
     BuildContext context,
     String url,
-    Map<String, dynamic> body,
-  ) async {
+    Map<String, dynamic> body, {
+    Duration? timeout, // Allow custom timeout for specific calls
+  }) async {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
 
     return await http
@@ -37,7 +38,7 @@ class ApiService {
           },
           body: jsonEncode(body),
         )
-        .timeout(const Duration(seconds: 20));
+        .timeout(timeout ?? const Duration(seconds: 20));
   }
 
   static Future<http.Response> patch(

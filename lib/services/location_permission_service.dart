@@ -24,61 +24,81 @@ class LocationPermissionService {
   /// Request location permissions with prominent disclosure
   /// Returns true if all permissions are granted, false otherwise
   static Future<bool> requestLocationPermissions(BuildContext context) async {
-    // Step 1: Check if permissions are already granted
-    if (await hasAllPermissions()) {
-      debugPrint('✅ All location permissions already granted');
+    try {
+      // Step 1: Check if permissions are already granted
+      if (await hasAllPermissions()) {
+        debugPrint('✅ All location permissions already granted');
+        return true;
+      }
+
+      // Step 2: Show prominent disclosure BEFORE requesting any permissions
+      final userAcceptedDisclosure = await _showProminentDisclosure(context);
+      if (!userAcceptedDisclosure) {
+        debugPrint('❌ User declined disclosure');
+        return false;
+      }
+
+      // Step 3: Request foreground location
+      final foregroundGranted = await _requestForegroundLocation(context);
+      if (!foregroundGranted) {
+        debugPrint('❌ Foreground location permission denied');
+        return false;
+      }
+
+      // Step 4: Check if background location is already granted
+      if (await hasBackgroundPermission()) {
+        debugPrint('✅ Background location already granted');
+        return true;
+      }
+
+      // Step 5: Request background location permission
+      // Note: This opens Android settings and the app goes to background
+      // Add a small delay after returning to ensure app state is stable
+      final backgroundGranted = await _requestBackgroundLocation();
+
+      // Wait a bit for app to stabilize after returning from settings
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      if (!backgroundGranted) {
+        debugPrint('❌ Background location permission denied');
+        return false;
+      }
+
+      debugPrint('✅ All location permissions granted');
       return true;
-    }
-
-    // Step 2: Show prominent disclosure BEFORE requesting any permissions
-    final userAcceptedDisclosure = await _showProminentDisclosure(context);
-    if (!userAcceptedDisclosure) {
-      debugPrint('❌ User declined disclosure');
+    } catch (e, stackTrace) {
+      debugPrint('❌ CRASH PREVENTED: Error during permission request: $e');
+      debugPrint('Stack trace: $stackTrace');
       return false;
     }
-
-    // Step 3: Request foreground location
-    final foregroundGranted = await _requestForegroundLocation(context);
-    if (!foregroundGranted) {
-      debugPrint('❌ Foreground location permission denied');
-      return false;
-    }
-
-    // Step 4: Check if background location is already granted
-    if (await hasBackgroundPermission()) {
-      debugPrint('✅ Background location already granted');
-      return true;
-    }
-
-    // Step 5: Request background location permission
-    final backgroundGranted = await _requestBackgroundLocation();
-    if (!backgroundGranted) {
-      debugPrint('❌ Background location permission denied');
-      return false;
-    }
-
-    debugPrint('✅ All location permissions granted');
-    return true;
   }
 
   /// Request foreground location permission
   static Future<bool> _requestForegroundLocation(BuildContext context) async {
-    LocationPermission permission = await Geolocator.checkPermission();
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
 
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
 
-    if (permission == LocationPermission.denied) {
+      debugPrint('🔵 Foreground permission status: ${permission.toString()}');
+
+      if (permission == LocationPermission.denied) {
+        return false;
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        return false;
+      }
+
+      return permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always;
+    } catch (e, stackTrace) {
+      debugPrint('❌ CRASH PREVENTED: Error requesting foreground location: $e');
+      debugPrint('Stack trace: $stackTrace');
       return false;
     }
-
-    if (permission == LocationPermission.deniedForever) {
-      return false;
-    }
-
-    return permission == LocationPermission.whileInUse ||
-        permission == LocationPermission.always;
   }
 
   /// Show prominent disclosure dialog
@@ -89,9 +109,9 @@ class LocationPermissionService {
     final result = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => ProminentDisclosureDialog(
-        onAccept: () => Navigator.of(context).pop(true),
-        onDecline: () => Navigator.of(context).pop(false),
+      builder: (dialogContext) => ProminentDisclosureDialog(
+        onAccept: () => Navigator.of(dialogContext).pop(true),
+        onDecline: () => Navigator.of(dialogContext).pop(false),
       ),
     );
 
@@ -100,8 +120,14 @@ class LocationPermissionService {
 
   /// Request background location permission
   static Future<bool> _requestBackgroundLocation() async {
-    final status = await ph.Permission.locationAlways.request();
-    return status.isGranted;
+    try {
+      final status = await ph.Permission.locationAlways.request();
+      // debugPrint('🔵 Background permission status: ${status.toString()}');
+      return status.isGranted;
+    } catch (e) {
+      // debugPrint('❌ CRASH PREVENTED: Error requesting background location: $e');
+      return false;
+    }
   }
 
   /// Check if location services are enabled

@@ -49,14 +49,20 @@ class ClockApi {
       };
 
       if (isOnline) {
-        // ONLINE: Send to API
+        // ONLINE: Send to API with extended timeout for slow DB
         LoggerService.info('ClockIn Request: ${Api.clock}', tag: 'ClockApi');
         LoggerService.debug(
           'ClockIn Body: ${jsonEncode(body)}',
           tag: 'ClockApi',
         );
 
-        final response = await ApiService.post(context, Api.clock, body);
+        // ⚠️ Use longer timeout (45s) to handle DB restarts/slowness
+        final response = await ApiService.post(
+          context,
+          Api.clock,
+          body,
+          timeout: const Duration(seconds: 45),
+        );
 
         LoggerService.info(
           'ClockIn Response: ${response.statusCode}',
@@ -280,7 +286,13 @@ class ClockApi {
           tag: 'ClockApi',
         );
 
-        final response = await ApiService.post(context, Api.clock, body);
+        // ⚠️ Use longer timeout (45s) to handle DB restarts/slowness
+        final response = await ApiService.post(
+          context,
+          Api.clock,
+          body,
+          timeout: const Duration(seconds: 45),
+        );
 
         LoggerService.info(
           'ClockOut Response: ${response.statusCode}',

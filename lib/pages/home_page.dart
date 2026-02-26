@@ -61,6 +61,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _clockInTime;
   bool _isProcessingClockAction =
       false; // ✅ FIX BUG #14: Lock form during API call
+  DateTime?
+  _lastClockActionTime; // ⏰ Track last clock action to prevent premature refresh
 
   // Form state
   String _selectedJobType = '';
@@ -202,7 +204,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
 
       // Refresh clock status from server when app resumes
-      _checkExistingClock();
+      // ⚠️ BUT: Don't refresh if we just performed a clock action (prevents race condition with slow DB)
+      final timeSinceLastAction = _lastClockActionTime != null
+          ? DateTime.now().difference(_lastClockActionTime!)
+          : null;
+
+      if (timeSinceLastAction == null || timeSinceLastAction.inSeconds > 30) {
+        // Safe to refresh (no recent action)
+        _checkExistingClock();
+      } else {
+        debugPrint(
+          '⏰ Skipping refresh - recent clock action ${timeSinceLastAction.inSeconds}s ago (preventing DB race condition)',
+        );
+      }
 
       // ✅ FIX BUG #6: Refresh pending sync count on app resume
       // This ensures badge updates after background sync completes
@@ -446,6 +460,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
         // ✨ NEW: Immediately update local and database state so background isolate sees us as clocked out
         setState(() => _isClockedIn = false);
+        _autoClockOutService?.stopMonitoring();
+        debugPrint('🛑 Stopped monitoring (location disabled)');
+
         await OfflineDatabase.saveClockStatus({
           'isClockedIn': false,
           'clockLogGuid': null,
@@ -473,6 +490,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
         // ✨ Immediately update state
         setState(() => _isClockedIn = false);
+        _autoClockOutService?.stopMonitoring();
+        debugPrint('🛑 Stopped monitoring (permission revoked)');
+
         await OfflineDatabase.saveClockStatus({
           'isClockedIn': false,
           'clockLogGuid': null,
@@ -501,6 +521,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
         // ✨ NEW: Immediately update local and database state so background isolate sees us as clocked out
         setState(() => _isClockedIn = false);
+        _autoClockOutService?.stopMonitoring();
+        debugPrint('🛑 Stopped monitoring (geofence violation)');
+
         await OfflineDatabase.saveClockStatus({
           'isClockedIn': false,
           'clockLogGuid': null,
@@ -665,23 +688,54 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _initLocationAndClock() async {
     if (!mounted) return;
 
-    // 1. Show Prominent Disclosure & Request Permissions
-    // This will show the "Purple" dialog if background permission is missing
-    final granted = await LocationPermissionService.requestLocationPermissions(
-      context,
-    );
+    try {
+      // 1. Show Prominent Disclosure & Request Permissions
+      // This will show the "Purple" dialog if background permission is missing
+      final granted =
+          await LocationPermissionService.requestLocationPermissions(context);
 
-    // ✨ FIX: If user declines on startup, show the warning immediately
-    if (!granted && mounted) {
-      _showOpenSettingsDialog();
+      // ✨ Wait for next frame to ensure UI is ready after returning from settings
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      // ✨ Check mounted again after async call (app might have gone to background)
+      if (!mounted) {
+        debugPrint(
+          '⚠️ Widget unmounted after permission request, stopping initialization',
+        );
+        return;
+      }
+
+      // ✨ FIX: If user declines on startup, show the warning immediately and STOP
+      if (!granted) {
+        // Use postFrameCallback to ensure context is valid
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _showOpenSettingsDialog();
+          }
+        });
+        return; // Don't continue to _getCurrentPosition if permission denied
+      }
+
+      // 2. Get Location
+      // This handles foreground permission if not already granted
+      if (mounted) {
+        await _getCurrentPosition();
+      }
+
+      // Note: _checkExistingClock() now called in _initializeData()
+      // to prevent showing stale cache before server verification
+    } catch (e, stackTrace) {
+      debugPrint('❌ CRASH PREVENTED in _initLocationAndClock: $e');
+      debugPrint('Stack trace: $stackTrace');
+      // Show user-friendly message using postFrameCallback
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _showSnackBar(
+            'Permission setup encountered an error. Please restart the app.',
+          );
+        }
+      });
     }
-
-    // 2. Get Location
-    // This handles foreground permission if not already granted
-    await _getCurrentPosition();
-
-    // Note: _checkExistingClock() now called in _initializeData()
-    // to prevent showing stale cache before server verification
   }
 
   void _startTimers() {
@@ -743,6 +797,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _checkExistingClock() async {
+    // ⚠️ CRITICAL: Don't interfere with recent clock actions (prevents race conditions)
+    final timeSinceLastAction = _lastClockActionTime != null
+        ? DateTime.now().difference(_lastClockActionTime!)
+        : null;
+
+    if (timeSinceLastAction != null && timeSinceLastAction.inSeconds < 30) {
+      debugPrint(
+        '⏰ Skipping _checkExistingClock - recent clock action ${timeSinceLastAction.inSeconds}s ago',
+      );
+      return; // Don't check/restart monitoring if we just did a clock action
+    }
+
     final result = await ClockApi.getLatestClock(context);
     if (!mounted) return;
 
@@ -1304,16 +1370,48 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     // Validation 4: Background location permission required (only for clock in)
     if (!_isClockedIn) {
-      final hasPermission =
-          await LocationPermissionService.hasBackgroundPermission();
-      if (!hasPermission) {
-        // ✨ Simplified: Go directly to disclosure request instead of showing Red dialog first
-        final granted =
-            await LocationPermissionService.requestLocationPermissions(context);
-        if (!granted) {
-          if (mounted) _showOpenSettingsDialog();
-          return;
+      try {
+        final hasPermission =
+            await LocationPermissionService.hasBackgroundPermission();
+        if (!hasPermission) {
+          // ✨ Simplified: Go directly to disclosure request instead of showing Red dialog first
+          final granted =
+              await LocationPermissionService.requestLocationPermissions(
+                context,
+              );
+
+          // Wait for UI to stabilize after returning from settings
+          await Future.delayed(const Duration(milliseconds: 100));
+
+          // Check if widget is still mounted after returning from settings
+          if (!mounted) {
+            debugPrint(
+              '⚠️ Widget unmounted after permission request, aborting clock-in',
+            );
+            return;
+          }
+
+          if (!granted) {
+            // Use postFrameCallback to ensure context is valid
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _showOpenSettingsDialog();
+            });
+            return;
+          }
         }
+      } catch (e, stackTrace) {
+        debugPrint('❌ CRASH PREVENTED during permission check: $e');
+        debugPrint('Stack trace: $stackTrace');
+        // Use postFrameCallback for error dialog
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _showDialog(
+              'Permission Error',
+              'Unable to verify location permissions. Please try again.',
+            );
+          }
+        });
+        return;
       }
     }
 
@@ -1335,6 +1433,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _performClockIn() async {
+    // ⏰ Mark timestamp to prevent premature UI refresh
+    _lastClockActionTime = DateTime.now();
+
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final userGuid = auth.userInfo?['userId'] ?? '';
 
@@ -1435,10 +1536,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         debugPrint('⚠️ Error updating pending count: $e');
       }
 
-      _showSuccessDialog(
-        'Clock In Successful',
-        'Time: ${_formatClockTime(result['clockTime'])}',
-      );
+      // ✨ Show appropriate success message
+      if (result['offline'] == true) {
+        // Queued due to slow/offline connection
+        _showSuccessDialog(
+          'Clock In Saved',
+          'Time: ${_formatClockTime(result['clockTime'])}\n\n'
+              'Saved locally. Will sync automatically when online.',
+        );
+      } else {
+        _showSuccessDialog(
+          'Clock In Successful',
+          'Time: ${_formatClockTime(result['clockTime'])}',
+        );
+      }
     } else {
       // ✨ Check for multi-device conflict
       if (result['multiDeviceConflict'] == true) {
@@ -1457,6 +1568,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     double? distance,
     String? reason,
   }) async {
+    // ⏰ Mark timestamp to prevent premature UI refresh
+    _lastClockActionTime = DateTime.now();
+
     if (_clockRefGuid == null) {
       _showDialog('Error', 'No clock in record found');
       return;
@@ -1495,10 +1609,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     if (result['success'] && mounted) {
       if (!isAutomatic) {
-        _showSuccessDialog(
-          'Clock Out Successful',
-          'In: ${_formatClockTime(_clockInTime)}\nOut: ${_formatClockTime(result['clockTime'])}',
-        );
+        // ✨ Show appropriate success message
+        if (result['offline'] == true) {
+          _showSuccessDialog(
+            'Clock Out Saved',
+            'In: ${_formatClockTime(_clockInTime)}\nOut: ${_formatClockTime(result['clockTime'])}\n\n'
+                'Saved locally. Will sync automatically when online.',
+          );
+        } else {
+          _showSuccessDialog(
+            'Clock Out Successful',
+            'In: ${_formatClockTime(_clockInTime)}\nOut: ${_formatClockTime(result['clockTime'])}',
+          );
+        }
       } else {
         // Show persistent notification for auto clock-out
         await NotificationService.showAutoClockOutNotification(
@@ -1519,6 +1642,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _activityController.clear();
         _fieldVisibility = {};
       });
+
+      // ⚠️ CRITICAL: Explicitly stop monitoring to prevent ghost checks
+      _autoClockOutService?.stopMonitoring();
+      debugPrint('🛑 Explicitly stopped geofence monitoring after clock out');
 
       // ✨ Update pending sync count after action
       try {
@@ -1546,6 +1673,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             _activityController.clear();
             _fieldVisibility = {};
           });
+
+          // ⚠️ Stop monitoring in case of multi-device conflict
+          _autoClockOutService?.stopMonitoring();
         } else {
           // Manual clock-out: show dialog
           _showMultiDeviceConflictDialog(
