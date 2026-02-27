@@ -5,10 +5,39 @@ import 'package:provider/provider.dart';
 import 'package:flutter/material.dart';
 
 class ApiService {
+  /// Check if response is 401 (Unauthorized) and handle auto-logout
+  static Future<void> _handle401(
+    BuildContext context,
+    http.Response response,
+  ) async {
+    if (response.statusCode == 401) {
+      debugPrint('🔴 401 Unauthorized - Token expired, logging out...');
+
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      await auth.logout();
+
+      // Navigate to login page and clear all routes
+      if (context.mounted) {
+        Navigator.of(
+          context,
+        ).pushNamedAndRemoveUntil('/login', (route) => false);
+
+        // Show snackbar to inform user
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Session expired. Please login again.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
   static Future<http.Response> get(BuildContext context, String url) async {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
 
-    return await http
+    final response = await http
         .get(
           Uri.parse(url),
           headers: {
@@ -18,6 +47,11 @@ class ApiService {
           },
         )
         .timeout(const Duration(seconds: 20));
+
+    // Check for token expiration
+    await _handle401(context, response);
+
+    return response;
   }
 
   static Future<http.Response> post(
@@ -28,7 +62,7 @@ class ApiService {
   }) async {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
 
-    return await http
+    final response = await http
         .post(
           Uri.parse(url),
           headers: {
@@ -39,6 +73,11 @@ class ApiService {
           body: jsonEncode(body),
         )
         .timeout(timeout ?? const Duration(seconds: 20));
+
+    // Check for token expiration
+    await _handle401(context, response);
+
+    return response;
   }
 
   static Future<http.Response> patch(
@@ -48,7 +87,7 @@ class ApiService {
   ) async {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
 
-    return await http
+    final response = await http
         .patch(
           Uri.parse(url),
           headers: {
@@ -59,5 +98,10 @@ class ApiService {
           body: jsonEncode(body),
         )
         .timeout(const Duration(seconds: 20));
+
+    // Check for token expiration
+    await _handle401(context, response);
+
+    return response;
   }
 }
