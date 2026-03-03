@@ -3,9 +3,16 @@ import 'package:beewhere/pages/home_page.dart';
 import 'package:beewhere/pages/login_page.dart';
 import 'package:beewhere/pages/profile_page.dart';
 import 'package:beewhere/pages/report_page.dart';
+import 'package:beewhere/pages/support_page.dart';
+import 'package:beewhere/pages/audit_logs_page.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/services/logger_service.dart';
+import 'package:beewhere/services/clock_audit_logger.dart';
+import 'package:beewhere/services/offline_database.dart';
+import 'package:beewhere/services/pending_sync_service.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:beewhere/services/sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -15,6 +22,15 @@ void main() async {
 
   // Initialize logger service
   await LoggerService.init();
+
+  // ✨ Initialize clock audit logger for production debugging
+  await ClockAuditLogger.init();
+
+  // Initialize offline services
+  await OfflineDatabase.init();
+  await PendingSyncService.init();
+  ConnectivityService.init();
+  SyncService.init();
 
   runApp(
     MultiProvider(
@@ -45,6 +61,8 @@ class MyApp extends StatelessWidget {
         '/history': (context) => const HistoryPage(),
         '/profile': (context) => const ProfilePage(),
         '/report': (context) => const ReportPage(),
+        '/support': (context) => const SupportPage(),
+        '/audit-logs': (context) => const AuditLogsPage(),
       },
     );
   }

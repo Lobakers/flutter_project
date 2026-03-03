@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'package:beewhere/controller/report_api.dart';
+import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/widgets/drawer.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class ReportPage extends StatefulWidget {
   const ReportPage({super.key});
@@ -31,11 +35,96 @@ class _ReportPageState extends State<ReportPage> {
   List<dynamic> _reportData = [];
   String? _errorMessage;
 
+  // Connectivity state
+  bool _isOnline = true;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+
   @override
   void initState() {
     super.initState();
     // Initialize with current month
     _calculateDateRange();
+    _initConnectivityListener();
+
+    // ⚡ PERFORMANCE: Try to load cached report if available
+    _loadCachedReport();
+  }
+
+  // ⚡ NEW: Load cached report for instant UI
+  Future<void> _loadCachedReport() async {
+    if (_startDate == null || _endDate == null) return;
+
+    try {
+      final startTimestamp = _startDate!.millisecondsSinceEpoch ~/ 1000;
+      final endTimestamp = _endDate!.millisecondsSinceEpoch ~/ 1000;
+
+      final cachedData = await OfflineDatabase.getReportData(
+        reportType: _reportType,
+        startTimestamp: startTimestamp,
+        endTimestamp: endTimestamp,
+      );
+
+      if (cachedData != null && mounted) {
+        setState(() {
+          _reportData = cachedData is List ? cachedData : [cachedData];
+
+          // ⚡ FIX: Parse date strings to DateTime objects (same as _fetchReportData)
+          // When data is loaded from cache, dates are strings from JSON serialization
+          if (_reportType == 'attendance') {
+            for (var item in _reportData) {
+              // Parse inTime if it's a string
+              if (item['inTime'] != null && item['inTime'] is String) {
+                try {
+                  item['inTime'] = DateTime.parse(
+                    item['inTime'].toString().replaceAll('/', '-'),
+                  );
+                } catch (e) {
+                  debugPrint('Error parsing cached inTime: $e');
+                  item['inTime'] = null;
+                }
+              }
+              // Parse outTime if it's a string
+              if (item['outTime'] != null && item['outTime'] is String) {
+                try {
+                  item['outTime'] = DateTime.parse(
+                    item['outTime'].toString().replaceAll('/', '-'),
+                  );
+                } catch (e) {
+                  debugPrint('Error parsing cached outTime: $e');
+                  item['outTime'] = null;
+                }
+              }
+            }
+          }
+
+          _genReport = true; // Show cached report immediately
+        });
+        debugPrint(
+          '⚡ Loaded cached report data (instant UI) - ${_reportData.length} items',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading cached report: $e');
+    }
+  }
+
+  void _initConnectivityListener() {
+    _isOnline = ConnectivityService.isOnline;
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      ConnectivityResult result,
+    ) {
+      if (mounted) {
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
   }
 
   /// Calculate date range based on duration selection
@@ -149,6 +238,25 @@ class _ReportPageState extends State<ReportPage> {
     _fetchReportData();
   }
 
+  /// ⚡ Helper: Safely format time value (handles both DateTime and String)
+  String _formatTime(dynamic timeValue) {
+    if (timeValue == null) return '-N/A-';
+
+    try {
+      if (timeValue is DateTime) {
+        return DateFormat('hh:mm a').format(timeValue);
+      } else if (timeValue is String) {
+        // Try to parse string to DateTime first
+        final dateTime = DateTime.parse(timeValue.replaceAll('/', '-'));
+        return DateFormat('hh:mm a').format(dateTime);
+      }
+      return '-N/A-';
+    } catch (e) {
+      debugPrint('Error formatting time: $e');
+      return '-N/A-';
+    }
+  }
+
   /// Show report based on current filters
   Future<void> _showReport() async {
     // Reset navigation counters
@@ -247,6 +355,44 @@ class _ReportPageState extends State<ReportPage> {
             backgroundColor: Colors.transparent,
             foregroundColor: Colors.white,
             elevation: 0,
+            actions: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _isOnline
+                      ? Colors.green.withOpacity(0.2)
+                      : Colors.red.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _isOnline ? Colors.green : Colors.red,
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _isOnline ? Icons.wifi : Icons.wifi_off,
+                      color: _isOnline ? Colors.green : Colors.red,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _isOnline ? 'Online' : 'Offline',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _isOnline ? Colors.green : Colors.red,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 16),
+            ],
           ),
         ),
       ),
@@ -578,7 +724,7 @@ class _ReportPageState extends State<ReportPage> {
                     flex: 2,
                     child: Center(
                       child: Text(
-                        'Duration (hrs)',
+                        'Duration',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 14,
@@ -636,7 +782,7 @@ class _ReportPageState extends State<ReportPage> {
                           ),
                           child: Text(
                             item['inTime'] != null
-                                ? DateFormat('hh:mm a').format(item['inTime'])
+                                ? _formatTime(item['inTime'])
                                 : '-N/A-',
                             style: TextStyle(
                               fontSize: 13,
@@ -667,7 +813,7 @@ class _ReportPageState extends State<ReportPage> {
                           ),
                           child: Text(
                             item['outTime'] != null
-                                ? DateFormat('hh:mm a').format(item['outTime'])
+                                ? _formatTime(item['outTime'])
                                 : '-N/A-',
                             style: TextStyle(
                               fontSize: 13,

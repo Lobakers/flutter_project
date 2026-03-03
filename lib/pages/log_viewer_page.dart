@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:beewhere/services/logger_service.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:flutter/material.dart';
@@ -14,20 +15,64 @@ class _LogViewerPageState extends State<LogViewerPage> {
   List<Map<String, dynamic>> _logs = [];
   bool _isLoading = true;
   String _filterLevel = 'ALL'; // ALL, DEBUG, INFO, WARNING, ERROR
+  late ScrollController _scrollController;
+  late StreamSubscription<Map<String, dynamic>> _logStreamSubscription;
 
   @override
   void initState() {
     super.initState();
+    _scrollController = ScrollController();
     _loadLogs();
+    _subscribeToLogStream();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _logStreamSubscription.cancel();
+    super.dispose();
+  }
+
+  /// ✨ Subscribe to real-time log stream
+  void _subscribeToLogStream() {
+    _logStreamSubscription = LoggerService.logStream.listen((newLog) {
+      if (mounted) {
+        setState(() {
+          _logs.insert(0, newLog); // Add to top for latest-first display
+          // Keep list reasonable size
+          if (_logs.length > 500) {
+            _logs.removeLast();
+          }
+        });
+        // Auto-scroll to show new log
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            0,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      }
+    });
   }
 
   Future<void> _loadLogs() async {
     setState(() => _isLoading = true);
     try {
-      final logs = await LoggerService.getLogs();
+      final logs = await LoggerService.getLogs(limit: 500);
       setState(() {
-        _logs = logs;
+        _logs = logs.reversed.toList(); // Show latest first
         _isLoading = false;
+      });
+      // Auto-scroll to top (where latest logs are)
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            0,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
       });
     } catch (e) {
       debugPrint('Error loading logs: $e');
@@ -76,6 +121,83 @@ class _LogViewerPageState extends State<LogViewerPage> {
     }
   }
 
+  Widget _buildLogTile(Map<String, dynamic> log) {
+    final timestamp = DateTime.parse(log['timestamp']);
+    final formattedTime = DateFormat('HH:mm:ss').format(timestamp);
+
+    return ExpansionTile(
+      leading: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: _getLevelColor(log['level']).withOpacity(0.1),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: _getLevelColor(log['level'])),
+        ),
+        child: Text(
+          log['level'],
+          style: TextStyle(
+            color: _getLevelColor(log['level']),
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+      title: Text(
+        log['message'],
+        style: const TextStyle(fontSize: 13),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        '$formattedTime • ${log['tag'] ?? ''}',
+        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+      ),
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText('Message: ${log['message']}'),
+              const SizedBox(height: 8),
+              if (log['error'] != null) ...[
+                Text(
+                  'Error:',
+                  style: TextStyle(
+                    color: Colors.red.shade700,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                SelectableText(
+                  log['error'],
+                  style: TextStyle(color: Colors.red.shade700),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (log['stackTrace'] != null) ...[
+                const Text(
+                  'Stack Trace:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  color: Colors.grey.shade100,
+                  child: SelectableText(
+                    log['stackTrace'],
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final filteredLogs = _filterLevel == 'ALL'
@@ -84,7 +206,7 @@ class _LogViewerPageState extends State<LogViewerPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Debug Logs'),
+        title: const Text('Debug Logs 📡 Live'),
         actions: [
           IconButton(icon: const Icon(Icons.refresh), onPressed: _loadLogs),
           IconButton(
@@ -126,108 +248,20 @@ class _LogViewerPageState extends State<LogViewerPage> {
             ),
           ),
 
-          // Logs List
+          // ✨ Real-time Logs List (updates via stream subscription in initState)
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
                 : filteredLogs.isEmpty
                 ? const Center(child: Text('No logs found'))
                 : ListView.separated(
+                    controller: _scrollController,
+                    reverse: false,
                     itemCount: filteredLogs.length,
                     separatorBuilder: (context, index) =>
                         const Divider(height: 1),
                     itemBuilder: (context, index) {
-                      final log = filteredLogs[index];
-                      final timestamp = DateTime.parse(log['timestamp']);
-                      final formattedTime = DateFormat(
-                        'HH:mm:ss',
-                      ).format(timestamp);
-
-                      return ExpansionTile(
-                        leading: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: _getLevelColor(
-                              log['level'],
-                            ).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                              color: _getLevelColor(log['level']),
-                            ),
-                          ),
-                          child: Text(
-                            log['level'],
-                            style: TextStyle(
-                              color: _getLevelColor(log['level']),
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        title: Text(
-                          log['message'],
-                          style: const TextStyle(fontSize: 13),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          '$formattedTime • ${log['tag']}',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                SelectableText('Message: ${log['message']}'),
-                                const SizedBox(height: 8),
-                                if (log['error'] != null) ...[
-                                  Text(
-                                    'Error:',
-                                    style: TextStyle(
-                                      color: Colors.red.shade700,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  SelectableText(
-                                    log['error'],
-                                    style: TextStyle(
-                                      color: Colors.red.shade700,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                ],
-                                if (log['stack_trace'] != null) ...[
-                                  const Text(
-                                    'Stack Trace:',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.all(8),
-                                    color: Colors.grey.shade100,
-                                    child: SelectableText(
-                                      log['stack_trace'],
-                                      style: const TextStyle(
-                                        fontSize: 10,
-                                        fontFamily: 'monospace',
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                        ],
-                      );
+                      return _buildLogTile(filteredLogs[index]);
                     },
                   ),
           ),

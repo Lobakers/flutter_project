@@ -1,10 +1,12 @@
 import 'dart:math';
-import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter/foundation.dart';
+import 'package:beewhere/config/geofence_config.dart';
 
+/// Helper class for geofence calculations
 class GeofenceHelper {
-  /// Default radius in meters
-  static const double defaultRadius = 500.0;
+  /// Default geofence radius in meters
+  static const double defaultRadius = GeofenceConfig.autoClockOutRadius;
 
   /// Calculate distance between two points using Haversine formula
   /// Returns distance in meters

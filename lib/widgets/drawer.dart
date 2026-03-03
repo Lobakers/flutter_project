@@ -1,5 +1,4 @@
 import 'package:beewhere/providers/auth_provider.dart';
-import 'package:beewhere/theme/color_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../pages/login_page.dart';
@@ -73,6 +72,32 @@ class AppDrawer extends StatelessWidget {
               Navigator.pushReplacementNamed(context, '/profile');
             },
           ),
+          ListTile(
+            leading: const Icon(Icons.help_outline),
+            title: const Text('Support'),
+            onTap: () {
+              Navigator.pop(context); // Close drawer
+              Navigator.pushReplacementNamed(context, '/support');
+            },
+          ),
+          // Audit Logs - Only visible for admin user
+          if (email == 'irfan@zen.com.my')
+            ListTile(
+              leading: const Icon(Icons.bug_report, color: Colors.purple),
+              title: const Text(
+                'Audit Logs',
+                style: TextStyle(color: Colors.purple),
+              ),
+              subtitle: const Text(
+                'Debug & troubleshooting',
+                style: TextStyle(fontSize: 11),
+              ),
+              onTap: () {
+                Navigator.pop(context); // Close drawer
+                Navigator.pushNamed(context, '/audit-logs');
+              },
+            ),
+          const Divider(),
           ListTile(
             leading: const Icon(Icons.logout, color: Colors.red),
             title: const Text('Logout', style: TextStyle(color: Colors.red)),

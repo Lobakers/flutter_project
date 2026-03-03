@@ -7,11 +7,17 @@ import 'package:beewhere/controller/attendance_profile_api.dart';
 import 'package:beewhere/controller/clock_api.dart';
 import 'package:beewhere/controller/geofence_helper.dart';
 import 'package:beewhere/controller/auto_clockout_service.dart';
+import 'package:beewhere/services/offline_database.dart';
+import 'package:beewhere/services/storage_service.dart'; // ✅ Import for watchdog
 import 'package:beewhere/services/background_geofence_service.dart';
 import 'package:beewhere/services/notification_service.dart';
+import 'package:beewhere/services/logger_service.dart'; // ✨ For on-device debug logs
+import 'package:beewhere/services/clock_audit_logger.dart'; // ✨ For production debugging
+import 'package:beewhere/services/location_permission_service.dart';
+import 'package:beewhere/services/pending_sync_service.dart'; // ✨ NEW
+import 'package:beewhere/services/sync_service.dart'; // ✨ For auto-sync
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
-import 'package:beewhere/theme/color_theme.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:beewhere/widgets/device_info_helper.dart';
 import 'package:beewhere/widgets/drawer.dart';
@@ -20,6 +26,14 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:slide_to_act/slide_to_act.dart';
+import 'package:beewhere/widgets/location_map_widget.dart';
+import 'package:beewhere/config/geofence_config.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:io';
+import 'package:beewhere/widgets/searchable_selection_sheet.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -28,7 +42,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // Location state
   String _currentAddress = "Tap to get location"; // Now stores coordinates
   bool _isLoading = false;
@@ -40,12 +54,17 @@ class _HomePageState extends State<HomePage> {
   String _currentDate = '';
   String _currentDay = '';
   Timer? _timer;
+  Timer? _serviceWatchdog; // ✅ FIX BUG #7: Watchdog to detect service death
 
   // Clock state
   bool _isClockedIn = false;
   String _clockStatus = "You Haven't Clocked In Yet";
   String? _clockRefGuid;
   String? _clockInTime;
+  bool _isProcessingClockAction =
+      false; // ✅ FIX BUG #14: Lock form during API call
+  DateTime?
+  _lastClockActionTime; // ⏰ Track last clock action to prevent premature refresh
 
   // Form state
   String _selectedJobType = '';
@@ -69,10 +88,21 @@ class _HomePageState extends State<HomePage> {
 
   AutoClockOutService? _autoClockOutService;
 
+  // Connectivity state
+  bool _isOnline = true;
+  int _pendingSyncCount = 0; // ✨ NEW: Track pending actions for UI badge
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+  StreamSubscription<void>?
+  _pendingSyncSubscription; // ✨ Stream for pending syncs
+
   double? _currentUserLat;
   double? _currentUserLng;
   double? _lastDistance;
   int? _lastViolationCount;
+
+  // ⚡ Location caching state (to throttle cache writes)
+  double? _lastCachedLat;
+  double? _lastCachedLng;
 
   @override
   void initState() {
@@ -81,112 +111,713 @@ class _HomePageState extends State<HomePage> {
     // ✨ Initialize notification service
     NotificationService.init();
 
-    // ✨ FIX: Initialize here safely
-    _autoClockOutService = AutoClockOutService(
-      checkInterval: const Duration(seconds: 15),
-      radiusInMeters: 250.0,
-      // radiusInMeters: 10.0, //testing purpose
-      onLeaveGeofence: _onUserLeftGeofence,
-    );
+    // ✨ SINGLETON: Use global instance instead of creating new
+    _autoClockOutService = AutoClockOutService.instance;
+    _autoClockOutService!.onLeaveGeofence = _onUserLeftGeofence;
+
+    // ✨ Listen to auto clock-out status stream
+    _autoClockOutService?.statusStream.listen((status) {
+      if (mounted) {
+        setState(() {
+          _currentUserLat = status['userLat'];
+          _currentUserLng = status['userLng'];
+          _lastDistance = status['distance'];
+          _lastViolationCount = status['violationCount'];
+        });
+      }
+    });
 
     _initializeData();
     _startTimers();
+    _startLocationStream(); // ✨ Start real-time stream
+    _initConnectivityListener();
+
+    // ✨ Dynamically update UI when pending sync actions change
+    _pendingSyncSubscription = PendingSyncService.onChange.listen((_) async {
+      final previousCount = _pendingSyncCount;
+      await _loadPendingSyncCount();
+
+      // ✨ FIX: When all pending syncs complete (count drops to 0), refresh clock status
+      // This ensures UI updates after offline actions sync to server
+      if (previousCount > 0 && _pendingSyncCount == 0 && mounted) {
+        debugPrint(
+          '✅ All pending syncs completed, refreshing clock status from server...',
+        );
+        // Small delay to ensure server has processed the sync
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted) {
+          await _checkExistingClock();
+        }
+      }
+    });
+
+    // ✨ Request background location permission on startup
+    // Use addPostFrameCallback to ensure context is valid for showing dialogs
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initLocationAndClock();
+
+      // ✨ FIX: Trigger sync on app startup if online and have pending actions
+      _checkAndTriggerSync();
+    });
+
+    // ✨ Add app lifecycle observer to refresh status when app resumes
+    WidgetsBinding.instance.addObserver(this);
+
+    // ✅ FIX BUG #7: Start service watchdog to detect if OS kills the service
+    _startServiceWatchdog();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    super.didChangeAppLifecycleState(state);
+
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('📱 App resumed, refreshing clock status');
+
+      // Re-check connectivity status on app resume
+      // This fixes the issue where indicator stays "offline" after phone sleep
+      try {
+        final isOnline = await ConnectivityService.checkConnectivity();
+        if (mounted) {
+          setState(() {
+            _isOnline = isOnline;
+          });
+        }
+        debugPrint('📡 Connectivity refreshed on resume: $_isOnline');
+
+        // ✨ FIX: Trigger sync if online and have pending actions
+        if (isOnline) {
+          final pendingCount = await PendingSyncService.getPendingCount();
+          if (pendingCount > 0) {
+            debugPrint(
+              '🔄 App resumed online with $pendingCount pending actions, triggering sync...',
+            );
+            // ✨ AUDIT LOG: Sync triggered on app resume
+            await ClockAuditLogger.logSyncAttempt(
+              trigger: 'app_resumed',
+              pendingCount: pendingCount,
+            );
+            SyncService.syncPendingActions();
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ Error checking connectivity on resume: $e');
+      }
+
+      // ✨ Resume stream if needed
+      if (_positionStreamSubscription == null ||
+          _positionStreamSubscription!.isPaused) {
+        _startLocationStream();
+      }
+
+      // ✨ Tell background service that app is in foreground
+      try {
+        await FlutterForegroundTask.saveData(
+          key: 'appInForeground',
+          value: true,
+        );
+      } catch (e) {
+        debugPrint('⚠️ Error updating foreground flag: $e');
+      }
+
+      // Refresh clock status from server when app resumes
+      // ⚠️ BUT: Don't refresh if we just performed a clock action (prevents race condition with slow DB)
+      final timeSinceLastAction = _lastClockActionTime != null
+          ? DateTime.now().difference(_lastClockActionTime!)
+          : null;
+
+      if (timeSinceLastAction == null || timeSinceLastAction.inSeconds > 30) {
+        // Safe to refresh (no recent action)
+        _checkExistingClock();
+      } else {
+        debugPrint(
+          '⏰ Skipping refresh - recent clock action ${timeSinceLastAction.inSeconds}s ago (preventing DB race condition)',
+        );
+      }
+
+      // ✅ FIX BUG #6: Refresh pending sync count on app resume
+      // This ensures badge updates after background sync completes
+      try {
+        final count = await PendingSyncService.getPendingCount();
+        if (mounted) {
+          setState(() {
+            _pendingSyncCount = count;
+          });
+        }
+        debugPrint('📊 Pending sync count refreshed: $count');
+      } catch (e) {
+        debugPrint('⚠️ Error refreshing pending count: $e');
+      }
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      debugPrint('📱 App paused/inactive, background service will take over');
+
+      // ✨ Tell background service that app is NOT in foreground
+      try {
+        await FlutterForegroundTask.saveData(
+          key: 'appInForeground',
+          value: false,
+        );
+      } catch (e) {
+        debugPrint('⚠️ Error updating foreground flag: $e');
+      }
+    }
+  }
+
+  // ✨ Initialize connectivity listener
+  void _initConnectivityListener() {
+    // Set initial state
+    _isOnline = ConnectivityService.isOnline;
+
+    // Listen to connectivity changes
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      ConnectivityResult result,
+    ) {
+      final wasOnline = _isOnline;
+      final isNowOnline = result != ConnectivityResult.none;
+
+      if (mounted) {
+        setState(() {
+          _isOnline = isNowOnline;
+        });
+      }
+
+      // FIX: Only re-sync with server when connection is RESTORED (offline -> online).
+      // When going offline, we preserve the current in-memory clock state as-is.
+      // This prevents the UI from resetting to "not clocked in" on connectivity loss.
+      if (!wasOnline && isNowOnline) {
+        debugPrint(
+          '📡 Connection restored — syncing clock status with server...',
+        );
+        _checkExistingClock();
+      }
+    });
+  }
+
+  // ✅ FIX BUG #7: Service watchdog to detect and restart dead service
+  void _startServiceWatchdog() {
+    // Check every 5 minutes if service is still running
+    _serviceWatchdog = Timer.periodic(const Duration(minutes: 5), (
+      timer,
+    ) async {
+      try {
+        // Only check if user is clocked in
+        if (!_isClockedIn) return;
+
+        final isRunning = await FlutterForegroundTask.isRunningService;
+        if (!isRunning) {
+          debugPrint(
+            '⚠️ WATCHDOG: Background service died! Attempting restart...',
+          );
+
+          // Get saved tracking parameters from storage
+          final state = await StorageService.getClockInState();
+          if (state != null && state['isClockedIn'] == true) {
+            final targetLat = state['targetLat'] as double?;
+            final targetLng = state['targetLng'] as double?;
+            final targetAddress = state['targetAddress'] as String?;
+            final radiusInMeters = state['radiusInMeters'] as double?;
+            final clockRefGuid = state['clockRefGuid'] as String?;
+
+            if (targetLat != null &&
+                targetLng != null &&
+                clockRefGuid != null) {
+              debugPrint(
+                '🔄 WATCHDOG: Restarting service with saved parameters',
+              );
+
+              // ✨ AUDIT LOG: Watchdog restart
+              await ClockAuditLogger.logServiceRestart(
+                serviceType: 'BackgroundGeofence',
+                clockRefGuid: clockRefGuid,
+                reason: 'Service died, watchdog detected and restarting',
+              );
+
+              await BackgroundGeofenceService.startTracking(
+                targetLat: targetLat,
+                targetLng: targetLng,
+                targetAddress: targetAddress ?? 'work location',
+                radiusInMeters:
+                    radiusInMeters ?? GeofenceConfig.autoClockOutRadius,
+                clockRefGuid: clockRefGuid,
+              );
+              debugPrint('✅ WATCHDOG: Service restarted successfully');
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ WATCHDOG: Error checking service: $e');
+      }
+    });
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _serviceWatchdog?.cancel(); // ✅ Stop watchdog
+    _positionStreamSubscription?.cancel(); // ✨ Cancel stream
     _activityController.dispose();
-    _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
+    // ✨ SINGLETON: Don't dispose - let it live across page navigation
+    // _autoClockOutService?.dispose();
+    _connectivitySubscription?.cancel();
+    _pendingSyncSubscription?.cancel(); // ✨ Cancel sync subscription
+    WidgetsBinding.instance.removeObserver(this); // ✨ Remove lifecycle observer
+
     super.dispose();
   }
 
-  // ✨ CALLBACK: When user leaves geofence area
+  Future<void> _loadPendingSyncCount() async {
+    try {
+      final count = await PendingSyncService.getPendingCount();
+      if (mounted) {
+        setState(() {
+          _pendingSyncCount = count;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error refreshing pending count: $e');
+    }
+  }
+
+  /// ✨ FIX: Check and trigger sync on app startup if needed
+  /// ✨ FIX: Check and trigger sync on app startup if needed
+  Future<void> _checkAndTriggerSync() async {
+    try {
+      // Only sync if online
+      final isOnline = await ConnectivityService.checkConnectivity();
+      if (!isOnline) {
+        debugPrint('📵 App startup: Offline, skipping sync check');
+        // ✨ AUDIT LOG: Startup offline
+        final pendingCount = await PendingSyncService.getPendingCount();
+        await ClockAuditLogger.log(
+          eventType: 'APP_STARTUP',
+          description:
+              'App started OFFLINE. $pendingCount actions queued (will sync when online).',
+        );
+        return;
+      }
+
+      // Check if we have pending actions
+      final pendingCount = await PendingSyncService.getPendingCount();
+      if (pendingCount > 0) {
+        debugPrint(
+          '🚀 App startup: Found $pendingCount pending actions, triggering sync...',
+        );
+        // ✨ AUDIT LOG: Sync triggered on app startup
+        await ClockAuditLogger.logSyncAttempt(
+          trigger: 'app_startup',
+          pendingCount: pendingCount,
+        );
+        // Trigger sync (non-blocking)
+        SyncService.syncPendingActions();
+      } else {
+        debugPrint('✅ App startup: No pending actions to sync');
+        // ✨ AUDIT LOG: No pending actions on startup
+        await ClockAuditLogger.log(
+          eventType: 'APP_STARTUP',
+          description: 'App started ONLINE. No pending actions to sync.',
+        );
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error checking pending sync on startup: $e');
+      // ✨ AUDIT LOG: Error on startup sync check
+      await ClockAuditLogger.logError(
+        operation: 'App startup sync check',
+        error: e.toString(),
+      );
+    }
+  }
+
+  StreamSubscription<Position>?
+  _positionStreamSubscription; // ✨ Stream for real-time location
+
+  // start auto location refresh
+  void _startLocationStream() {
+    // Cancel existing stream if any
+    _positionStreamSubscription?.cancel();
+
+    // ✨ Subscribe to location updates
+    // detailed configuration for "Waze-like" updates
+    const locationSettings = LocationSettings(
+      accuracy: LocationAccuracy.high, // Good accuracy
+      distanceFilter: 5, // Update every 5 meters moved
+    );
+
+    _positionStreamSubscription =
+        Geolocator.getPositionStream(locationSettings: locationSettings).listen(
+          (Position position) {
+            if (mounted) {
+              setState(() {
+                _isLoading = false;
+                _latitude = position.latitude;
+                _longitude = position.longitude;
+                // Update address string
+                _currentAddress =
+                    '${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}';
+              });
+
+              // ⚡ Cache location periodically (every 50m movement to reduce writes)
+              // This ensures map shows quickly on next page load
+              if (_shouldCacheLocation(position)) {
+                StorageService.saveLastLocation(
+                  latitude: position.latitude,
+                  longitude: position.longitude,
+                  address: _currentAddress,
+                ).catchError((e) => debugPrint('Failed to cache location: $e'));
+              }
+
+              // 🧪 DEBUG: Print your real lat/long
+              // debugPrint(
+              //   '📍 Stream Location: ${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}',
+              // );
+            }
+          },
+          onError: (e) {
+            debugPrint('Location stream error: $e');
+          },
+        );
+  }
+
+  // ✨ Flag to prevent multiple simultaneous auto clock-out calls
+  bool _isAutoClockingOut = false;
+
+  // ✨ CALLBACK: When user leaves geofence area or location is disabled
   Future<void> _onUserLeftGeofence(double distance) async {
-    debugPrint(
-      '🚨 AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
+    LoggerService.logNotification(
+      '_onUserLeftGeofence called with distance: $distance, isClockedIn: $_isClockedIn, isAutoClockingOut: $_isAutoClockingOut',
     );
 
-    if (mounted) {
-      _showAutoClockOutDialog(distance);
+    // Check if we're still clocked in (prevent duplicate clock-out)
+    if (!_isClockedIn) {
+      LoggerService.logWithEmoji(
+        '!',
+        'Already clocked out, ignoring auto clock-out trigger',
+      );
+      return;
     }
 
-    await _performClockOut(isAutomatic: true, distance: distance);
-  }
-
-  Future<void> _updateGeofenceStatus() async {
-    if (!(_autoClockOutService?.isMonitoring ?? false)) return;
-
-    final status = await _autoClockOutService?.checkNow();
-    if (status != null && status['distance'] != null && mounted) {
-      setState(() {
-        _currentUserLat = status['userLat'];
-        _currentUserLng = status['userLng'];
-        _lastDistance = status['distance'];
-        _lastViolationCount = status['violationCount'];
-      });
-    }
-  }
-
-  void _showAutoClockOutDialog(double distance) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        backgroundColor: Colors.orange,
-        title: const Text(
-          'Auto Clock Out',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.location_off, size: 50, color: Colors.white),
-            const SizedBox(height: 10),
-            Text(
-              'You have moved ${distance.toStringAsFixed(0)}m away from your work location.',
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'You have been automatically clocked out.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
+    // ✨ NEW: Check if already processing via the service's global lock
+    // This handles cases where multiple HomePage instances might exist
+    // if (!AutoClockOutService.isGloballyProcessing) { ... } -- Service already blocked the call,
+    // but we add it here as a safety log.
+    LoggerService.logWithEmoji(
+      'ℹ️',
+      '_onUserLeftGeofence processing start. Global lock should be active.',
     );
+
+    // Check if already processing an auto clock-out
+    if (_isAutoClockingOut) {
+      LoggerService.logFailure(
+        'Auto clock-out already in progress, ignoring duplicate trigger',
+      );
+      return;
+    }
+
+    // Set flag to prevent duplicate calls
+    _isAutoClockingOut = true;
+
+    try {
+      // ✨ CRITICAL: Stop background service IMMEDIATELY to prevent duplicate triggers
+      LoggerService.logGeofenceStop(
+        'Stopping background service to prevent duplicate auto clock-out',
+      );
+      try {
+        await BackgroundGeofenceService.stopTracking();
+      } catch (e) {
+        LoggerService.logFailure('Error stopping background service: $e');
+      }
+
+      // Special case: distance = -1 means location service was disabled
+      if (distance < 0) {
+        LoggerService.logAutoClockOut(
+          'FOREGROUND AUTO CLOCK OUT TRIGGERED! Location service DISABLED',
+        );
+
+        // ✨ NEW: Immediately update local and database state so background isolate sees us as clocked out
+        setState(() => _isClockedIn = false);
+        _autoClockOutService?.stopMonitoring();
+        debugPrint('🛑 Stopped monitoring (location disabled)');
+
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': false,
+          'clockLogGuid': null,
+          'clockTime': null,
+          'jobType': null,
+          'address': null,
+          'clientId': null,
+          'projectId': null,
+          'contractId': null,
+          'activityName': null,
+        });
+
+        if (mounted) {
+          _showLocationDisabledDialog();
+        }
+        await _performClockOut(
+          isAutomatic: true,
+          distance: 0,
+          reason: 'location_disabled',
+        );
+      } else if (distance == -2.0) {
+        LoggerService.logAutoClockOut(
+          'FOREGROUND AUTO CLOCK OUT TRIGGERED! Location permission REVOKED',
+        );
+
+        // ✨ Immediately update state
+        setState(() => _isClockedIn = false);
+        _autoClockOutService?.stopMonitoring();
+        debugPrint('🛑 Stopped monitoring (permission revoked)');
+
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': false,
+          'clockLogGuid': null,
+          'clockTime': null,
+          'jobType': null,
+          'address': null,
+          'clientId': null,
+          'projectId': null,
+          'contractId': null,
+          'activityName': null,
+        });
+
+        if (mounted) {
+          _showPermissionRevokedDialog();
+        }
+
+        await _performClockOut(
+          isAutomatic: true,
+          distance: 0,
+          reason: 'permission_revoked',
+        );
+      } else {
+        LoggerService.logAutoClockOut(
+          'FOREGROUND AUTO CLOCK OUT TRIGGERED! Distance: ${distance.toStringAsFixed(2)}m',
+        );
+
+        // ✨ NEW: Immediately update local and database state so background isolate sees us as clocked out
+        setState(() => _isClockedIn = false);
+        _autoClockOutService?.stopMonitoring();
+        debugPrint('🛑 Stopped monitoring (geofence violation)');
+
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': false,
+          'clockLogGuid': null,
+          'clockTime': null,
+          'jobType': null,
+          'address': null,
+          'clientId': null,
+          'projectId': null,
+          'contractId': null,
+          'activityName': null,
+        });
+
+        if (mounted) {
+          _showAutoClockOutDialog(distance);
+        }
+
+        await _performClockOut(isAutomatic: true, distance: distance);
+      }
+    } finally {
+      // Reset flag after clock-out completes
+      _isAutoClockingOut = false;
+    }
+  }
+
+  // ✨ LOAD CACHED DATA FOR INSTANT UI (Optimized - always load cache first)
+  Future<void> _loadCachedData() async {
+    // ⚡ PERFORMANCE: Load cache UNCONDITIONALLY for instant UI
+    // This gives "offline mode" speed even when online
+    // Server data will overwrite cache in background
+
+    // 1. Load Clock Status from cache
+    try {
+      final cachedClock = await OfflineDatabase.getClockStatus();
+      if (cachedClock != null && mounted) {
+        debugPrint('⚡ Loaded clock status from cache (instant UI)');
+        // debugPrint('   Clock time from cache: ${cachedClock['clockTime']}');
+        setState(() {
+          _isClockedIn = cachedClock['isClockedIn'] == true;
+          if (_isClockedIn) {
+            _clockRefGuid = cachedClock['clockLogGuid'];
+            _clockInTime = cachedClock['clockTime'];
+            _clockStatus = _formatClockTime(_clockInTime);
+            _selectedJobType = _capitalizeFirst(cachedClock['jobType'] ?? '');
+            _selectedClient = cachedClock['clientId'];
+            _selectedProject = cachedClock['projectId'];
+            _selectedContract = cachedClock['contractId'];
+            _activityName = cachedClock['activityName'] ?? '';
+            _activityController.text = _activityName;
+
+            // Trigger UI updates
+            _updateFieldVisibility(_selectedJobType);
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading cached clock status: $e');
+    }
+
+    // 2. Load Dropdowns from cache
+    try {
+      final cachedClients = await OfflineDatabase.getClients();
+      final cachedProjects = await OfflineDatabase.getProjects();
+      final cachedContracts = await OfflineDatabase.getContracts();
+
+      if (mounted) {
+        setState(() {
+          if (cachedClients.isNotEmpty) _clients = cachedClients;
+          if (cachedProjects.isNotEmpty) _projects = cachedProjects;
+          if (cachedContracts.isNotEmpty) _contracts = cachedContracts;
+        });
+        debugPrint(
+          '⚡ Loaded dropdowns from cache: ${_clients.length} clients (instant UI)',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading cached dropdowns: $e');
+    }
+
+    // 3. Load last known location for instant map display
+    try {
+      final cachedLocation = await StorageService.getLastLocation();
+      if (cachedLocation != null && mounted) {
+        final lat = cachedLocation['latitude'] as double?;
+        final lng = cachedLocation['longitude'] as double?;
+        final address = cachedLocation['address'] as String?;
+
+        if (lat != null && lng != null) {
+          setState(() {
+            _latitude = lat;
+            _longitude = lng;
+            _currentAddress = address ?? 'Cached location';
+          });
+          // Set as last cached position to avoid immediate re-caching
+          _lastCachedLat = lat;
+          _lastCachedLng = lng;
+          debugPrint(
+            '⚡ Loaded location from cache for instant map (📍 $lat, $lng)',
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading cached location: $e');
+    }
   }
 
   Future<void> _initializeData() async {
-    await DeviceInfoHelper.init();
+    // ⚡ PERFORMANCE OPTIMIZATION: Load cache FIRST for instant UI
+    // This gives "offline mode" speed - user sees data immediately
+    // Then API calls refresh data in background
+
+    debugPrint('⚡ Step 1: Loading cached data for instant UI...');
+    await _loadCachedData(); // ⚡ INSTANT UI - show cache first
+
+    debugPrint('⚡ Step 2: Refreshing from API in background...');
+    // Now refresh from API in background (user already sees cached data)
+    // Don't block on these - let them run and update UI progressively
+
+    // ✅ CRITICAL: Load attendance profile FIRST (needed for geofence config)
     await _loadAttendanceProfile();
-    await _loadDropdownData();
-    // ✅ FIX: Get location FIRST before checking clock status
-    // This ensures _latitude and _longitude are available for geofence monitoring
-    await _getCurrentPosition();
-    await _checkExistingClock();
+
+    // Fire off API calls without blocking (they'll update UI when ready)
+    _refreshDataFromApi();
+
+    // Quick init tasks
+    await DeviceInfoHelper.init();
+
+    // ✨ Update pending sync count
+    try {
+      final count = await PendingSyncService.getPendingCount();
+      if (mounted) {
+        setState(() => _pendingSyncCount = count);
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error updating pending count: $e');
+    }
+  }
+
+  // ⚡ NEW: Refresh data from API without blocking
+  Future<void> _refreshDataFromApi() async {
+    // Run API calls in background, update UI as each completes
+    // User already sees cached data, so no blocking needed
+
+    // 1. Check clock status from server
+    _checkExistingClock()
+        .then((_) {
+          debugPrint('✅ Clock status refreshed from API');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Failed to refresh clock status: $e');
+        });
+
+    // 2. Refresh dropdown data
+    _loadDropdownData()
+        .then((_) {
+          debugPrint('✅ Dropdowns refreshed from API');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Failed to refresh dropdowns: $e');
+        });
+  }
+
+  // ✨ NEW: Handle permissions, location, and clock status after frame build
+  Future<void> _initLocationAndClock() async {
+    if (!mounted) return;
+
+    try {
+      // 1. Show Prominent Disclosure & Request Permissions
+      // This will show the "Purple" dialog if background permission is missing
+      final granted =
+          await LocationPermissionService.requestLocationPermissions(context);
+
+      // ✨ Wait for next frame to ensure UI is ready after returning from settings
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      // ✨ Check mounted again after async call (app might have gone to background)
+      if (!mounted) {
+        debugPrint(
+          '⚠️ Widget unmounted after permission request, stopping initialization',
+        );
+        return;
+      }
+
+      // ✨ FIX: If user declines on startup, show the warning immediately and STOP
+      if (!granted) {
+        // Use postFrameCallback to ensure context is valid
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _showOpenSettingsDialog();
+          }
+        });
+        return; // Don't continue to _getCurrentPosition if permission denied
+      }
+
+      // 2. Get Location
+      // This handles foreground permission if not already granted
+      if (mounted) {
+        await _getCurrentPosition();
+      }
+
+      // Note: _checkExistingClock() now called in _initializeData()
+      // to prevent showing stale cache before server verification
+    } catch (e, stackTrace) {
+      debugPrint('❌ CRASH PREVENTED in _initLocationAndClock: $e');
+      debugPrint('Stack trace: $stackTrace');
+      // Show user-friendly message using postFrameCallback
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _showSnackBar(
+            'Permission setup encountered an error. Please restart the app.',
+          );
+        }
+      });
+    }
   }
 
   void _startTimers() {
     _updateDateTime();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       _updateDateTime();
-      if (_isClockedIn && (_autoClockOutService?.isMonitoring ?? false)) {
-        _updateGeofenceStatus();
-      }
     });
   }
 
@@ -197,6 +828,26 @@ class _HomePageState extends State<HomePage> {
         _currentTime = DateFormat('HH:mm a').format(now);
         _currentDate = DateFormat('dd MMMM, yyyy').format(now);
         _currentDay = DateFormat('EEEE').format(now);
+
+        // ✨ Update live duration if clocked in
+        if (_isClockedIn && _clockInTime != null) {
+          final clockInDate = _parseClockInTime(_clockInTime);
+          if (clockInDate != null) {
+            final difference = now.difference(clockInDate);
+            final hours = difference.inHours;
+            final minutes = difference.inMinutes % 60;
+            _clockStatus = '$hours hours $minutes minute';
+
+            // Debug log every hour to track the issue (commented out for production)
+            // if (minutes == 0) {
+            //   debugPrint('⏱️  Duration Update:');
+            //   debugPrint('   Now: ${now.toIso8601String()}');
+            //   debugPrint('   Clock-in raw: $_clockInTime');
+            //   debugPrint('   Clock-in parsed: ${clockInDate.toIso8601String()}');
+            //   debugPrint('   Duration: $hours h $minutes m');
+            // }
+          }
+        }
       });
     }
   }
@@ -205,9 +856,15 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadAttendanceProfile() async {
     final result = await AttendanceProfileApi.getAttendanceProfile(context);
+    debugPrint('📊 AttendanceProfileApi result: $result');
     if (result['success'] && mounted) {
       final provider = Provider.of<AttendanceProvider>(context, listen: false);
       provider.setFromApiResponse(result['data']);
+      debugPrint('✅ AttendanceProvider initialized successfully');
+    } else {
+      debugPrint(
+        '❌ Failed to load attendance profile: ${result['message'] ?? 'Unknown error'}',
+      );
     }
   }
 
@@ -225,12 +882,30 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _checkExistingClock() async {
+    // ⚠️ CRITICAL: Don't interfere with recent clock actions (prevents race conditions)
+    final timeSinceLastAction = _lastClockActionTime != null
+        ? DateTime.now().difference(_lastClockActionTime!)
+        : null;
+
+    if (timeSinceLastAction != null && timeSinceLastAction.inSeconds < 30) {
+      debugPrint(
+        '⏰ Skipping _checkExistingClock - recent clock action ${timeSinceLastAction.inSeconds}s ago',
+      );
+      return; // Don't check/restart monitoring if we just did a clock action
+    }
+
     final result = await ClockApi.getLatestClock(context);
-    if (result['success'] && result['isClockedIn'] == true && mounted) {
+    if (!mounted) return;
+
+    if (result['success'] && result['isClockedIn'] == true) {
+      debugPrint('✅ User is clocked in - refreshing from server');
+      // debugPrint('   Clock time from server: ${result['clockTime']}');
       setState(() {
         _isClockedIn = true;
         _clockRefGuid = result['clockLogGuid'];
-        _clockStatus = result['clockTime'] ?? '';
+        _clockStatus = _formatClockTime(result['clockTime']); // ✨ Format time
+        _clockInTime =
+            result['clockTime']; // Store clock-in time for clock-out dialog
         _selectedJobType = _capitalizeFirst(result['jobType'] ?? '');
         _selectedClient = result['clientId'];
         _selectedProject = result['projectId'];
@@ -241,12 +916,94 @@ class _HomePageState extends State<HomePage> {
       _updateFieldVisibility(_selectedJobType);
 
       // ✨ If already clocked in, restart geofence monitoring
-      _startGeofenceMonitoringForClient(_selectedClient);
+      await _startGeofenceMonitoringForClient(_selectedClient);
+
+      // ✅ FIX BUG #13: Restart background service if not running
+      // CRITICAL: After clear app data, UI syncs but service doesn't restart
+      try {
+        final isServiceRunning = await FlutterForegroundTask.isRunningService;
+        if (!isServiceRunning) {
+          debugPrint(
+            '⚠️ User clocked in but background service not running! Restarting...',
+          );
+
+          // Get saved tracking parameters from storage
+          final state = await StorageService.getClockInState();
+          if (state != null && state['isClockedIn'] == true) {
+            final targetLat = state['targetLat'] as double?;
+            final targetLng = state['targetLng'] as double?;
+            final targetAddress = state['targetAddress'] as String?;
+            final radiusInMeters = state['radiusInMeters'] as double?;
+            final clockRefGuid = state['clockRefGuid'] as String?;
+
+            if (targetLat != null &&
+                targetLng != null &&
+                clockRefGuid != null) {
+              debugPrint(
+                '🔄 Restarting background service with saved parameters',
+              );
+
+              // Get configured radius for current job type
+              final attendance = Provider.of<AttendanceProvider>(
+                context,
+                listen: false,
+              );
+              final configRadius =
+                  attendance.getRadiusForJobType(_selectedJobType) ??
+                  radiusInMeters ??
+                  GeofenceConfig.autoClockOutRadius;
+
+              await BackgroundGeofenceService.startTracking(
+                targetLat: targetLat,
+                targetLng: targetLng,
+                targetAddress: targetAddress ?? 'work location',
+                radiusInMeters: configRadius,
+                clockRefGuid: clockRefGuid,
+              );
+              debugPrint('✅ Background service restarted successfully');
+            } else {
+              debugPrint('⚠️ Missing required parameters to restart service');
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ Error checking/restarting background service: $e');
+      }
+    } else if (result['success'] && result['isClockedIn'] == false) {
+      // ✨ FIX: If cache said we were clocked in, but server says we are NOT, reset UI
+      if (_isClockedIn) {
+        debugPrint(
+          '⚠️ Cache mismatch: Server says NOT clocked in. Resetting UI.',
+        );
+        setState(() {
+          _isClockedIn = false;
+          _clockRefGuid = null;
+          _clockStatus = "You Haven't Clocked In Yet";
+          _selectedJobType = '';
+          _selectedClient = null;
+          _selectedProject = null;
+          _selectedContract = null;
+          _activityController.clear();
+          _fieldVisibility = {};
+        });
+        _autoClockOutService?.stopMonitoring();
+      }
+    } else if (!result['success']) {
+      // ✅ FIX: API call failed (e.g. network error during connectivity transition).
+      // Do NOT reset the UI — preserve whatever clock state is already in memory.
+      // When the user is clocked in and loses connection, this keeps the UI correctly
+      // showing "Clocked In" instead of resetting to "not clocked in".
+      debugPrint(
+        '⚠️ getLatestClock failed (${result['message'] ?? 'unknown error'}). '
+        'Preserving in-memory clock state (_isClockedIn: $_isClockedIn).',
+      );
     }
   }
 
   // ===================== LOCATION =====================
 
+  // ✨ UPDATED: Only check foreground location permission
+  // Background location is checked separately before clock-in
   Future<bool> _handleLocationPermission() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -254,19 +1011,17 @@ class _HomePageState extends State<HomePage> {
       return false;
     }
 
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        _showSnackBar('Location permissions denied');
-        return false;
-      }
-    }
+    // ✨ Use the standardized permission service which includes prominent disclosure
+    final granted = await LocationPermissionService.requestLocationPermissions(
+      context,
+    );
 
-    if (permission == LocationPermission.deniedForever) {
-      _showSnackBar('Location permissions permanently denied');
+    if (!granted) {
+      // If not granted, we might want to show a specific message or dialog
+      // but requestLocationPermissions already handles the flow.
       return false;
     }
+
     return true;
   }
 
@@ -283,17 +1038,50 @@ class _HomePageState extends State<HomePage> {
       _latitude = position.latitude;
       _longitude = position.longitude;
 
+      // ✨ FIX: Start the live 5m tracking stream now that we have permissions
+      // On fresh install, the stream in initState fails because permissions aren't granted yet.
+      _startLocationStream();
+
       // 🧪 DEBUG: Print your real lat/long - COPY THIS TO testMode!
       debugPrint('═══════════════════════════════════════════');
-      debugPrint('🧪 YOUR REAL LOCATION:');
+      debugPrint(
+        '(test from homepage) YOUR REAL LOCATION at ${DateTime.now().toIso8601String()}:',
+      );
       debugPrint('   const double testLat = $_latitude;');
       debugPrint('   const double testLng = $_longitude;');
       debugPrint('═══════════════════════════════════════════');
+
+      // ✅ FIX BUG #10: Detect mock location during clock-in
+      // CRITICAL SECURITY: Prevent fraudulent clock-ins
+      if (position.isMocked) {
+        debugPrint('🚨 MOCK LOCATION DETECTED during clock-in attempt!');
+        if (mounted) {
+          setState(() {
+            _currentAddress = "Mock location detected";
+            _isLoading = false;
+          });
+          _showDialog(
+            'Invalid Location',
+            'Mock location detected. Please disable any GPS spoofing apps and try again.\\n\\nThis is a security measure to prevent fraudulent clock-ins.',
+          );
+        }
+        return;
+      }
 
       // Display coordinates instead of address to save geocoding API costs
       final coordinates =
           '${_latitude!.toStringAsFixed(6)}, ${_longitude!.toStringAsFixed(6)}';
       if (mounted) setState(() => _currentAddress = coordinates);
+
+      // ⚡ Cache location for instant map display on next load
+      _lastCachedLat = _latitude;
+      _lastCachedLng = _longitude;
+      await StorageService.saveLastLocation(
+        latitude: _latitude!,
+        longitude: _longitude!,
+        address: coordinates,
+      );
+      debugPrint('⚡ Cached location for next page load');
     } catch (e) {
       debugPrint('Location error: $e');
       if (mounted) setState(() => _currentAddress = "Failed to get location");
@@ -305,53 +1093,233 @@ class _HomePageState extends State<HomePage> {
   // ===================== GEOFENCE =====================
 
   /// Filter clients to show only those within 250m of current location
+  // List<dynamic> _getNearbyClients() {
+  //   if (_latitude == null || _longitude == null) {
+  //     debugPrint(
+  //       '⚠️ No location available, showing all ${_clients.length} clients',
+  //     );
+  //     return _clients; // Return all if no location
+  //   }
+
+  //   final nearbyClients = _clients.where((client) {
+  //     final locationData = client['LOCATION_DATA'] as List<dynamic>?;
+  //     if (locationData == null || locationData.isEmpty) {
+  //       return false; // Exclude clients without location
+  //     }
+
+  //     final location = locationData[0];
+  //     final clientLat = (location['LATITUDE'] as num?)?.toDouble();
+  //     final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+
+  //     if (clientLat == null || clientLng == null) {
+  //       return false; // Exclude clients with invalid coordinates
+  //     }
+
+  //     // Calculate distance
+  //     final distance = GeofenceHelper.calculateDistance(
+  //       _latitude!,
+  //       _longitude!,
+  //       clientLat,
+  //       clientLng,
+  //     );
+
+  //     final isNearby = distance <= 1000.0;
+  //     if (isNearby) {
+  //       // debugPrint(
+  //       //   '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',
+  //       // );
+  //     }
+
+  //     return isNearby; // Only include clients within 250m
+  //   }).toList();
+
+  //   // debugPrint(
+  //   //   '📍 Found ${nearbyClients.length} clients within 250m (out of ${_clients.length} total)',
+  //   // );
+
+  //   // Deduplicate by CLIENT_GUID to prevent dropdown errors
+  //   final seenGuids = <String>{};
+  //   final uniqueClients = nearbyClients.where((client) {
+  //     final guid = client['CLIENT_GUID'] as String?;
+  //     if (guid == null || seenGuids.contains(guid)) {
+  //       return false;
+  //     }
+  //     seenGuids.add(guid);
+  //     return true;
+  //   }).toList();
+
+  //   if (uniqueClients.length < nearbyClients.length) {
+  //     debugPrint(
+  //       '⚠️ Removed ${nearbyClients.length - uniqueClients.length} duplicate clients',
+  //     );
+  //   }
+
+  //   return uniqueClients;
+  // }
+
+  /// Filter clients based on geofence_filter setting for the selected job type
   List<dynamic> _getNearbyClients() {
-    if (_latitude == null || _longitude == null) {
-      debugPrint(
-        '⚠️ No location available, showing all ${_clients.length} clients',
-      );
-      return _clients; // Return all if no location
+    // ✨ NEW: Check if geofence filtering is enabled for current job type
+    final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+    final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+    final shouldFilterByGeofence = jobTypeConfig['geofence_filter'] ?? false;
+
+    // If geofence filtering is disabled, return all clients
+    if (!shouldFilterByGeofence) {
+      return _clients;
     }
 
+    // If no location available, return all clients with a warning
+    if (_latitude == null || _longitude == null) {
+      return _clients;
+    }
+
+    // ✨ Get configured radius for job type
+    final configRadius =
+        attendance.getRadiusForJobType(_selectedJobType) ??
+        GeofenceConfig.clientFilterRadius;
+
+    // Filter clients within configured radius
     final nearbyClients = _clients.where((client) {
       final locationData = client['LOCATION_DATA'] as List<dynamic>?;
       if (locationData == null || locationData.isEmpty) {
         return false; // Exclude clients without location
       }
 
-      final location = locationData[0];
-      final clientLat = (location['LATITUDE'] as num?)?.toDouble();
-      final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+      // ✨ NEW: Check ALL locations, not just the first one
+      bool isAnyLocationNearby = false;
 
-      if (clientLat == null || clientLng == null) {
-        return false; // Exclude clients with invalid coordinates
-      }
+      for (var location in locationData) {
+        final clientLat = (location['LATITUDE'] as num?)?.toDouble();
+        final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
 
-      // Calculate distance
-      final distance = GeofenceHelper.calculateDistance(
-        _latitude!,
-        _longitude!,
-        clientLat,
-        clientLng,
-      );
+        if (clientLat == null || clientLng == null) continue;
 
-      final isNearby = distance <= 1000.0;
-      if (isNearby) {
-        debugPrint(
-          '✅ Client "${client['NAME']}" is ${distance.toStringAsFixed(1)}m away',
+        // Calculate distance
+        final distance = GeofenceHelper.calculateDistance(
+          _latitude!,
+          _longitude!,
+          clientLat,
+          clientLng,
         );
+
+        if (distance <= configRadius) {
+          isAnyLocationNearby = true;
+          break; // Found one nearby location, so this client is valid
+        }
       }
 
-      return isNearby; // Only include clients within 250m
+      return isAnyLocationNearby;
     }).toList();
 
-    debugPrint(
-      '📍 Found ${nearbyClients.length} clients within 250m (out of ${_clients.length} total)',
-    );
-    return nearbyClients;
+    // Deduplicate by CLIENT_GUID to prevent dropdown errors
+    final seenGuids = <String>{};
+    final uniqueClients = nearbyClients.where((client) {
+      final guid = client['CLIENT_GUID'] as String?;
+      if (guid == null || seenGuids.contains(guid)) {
+        return false;
+      }
+      seenGuids.add(guid);
+      return true;
+    }).toList();
+
+    if (uniqueClients.length < nearbyClients.length) {
+      debugPrint(
+        '⚠️ Removed ${nearbyClients.length - uniqueClients.length} duplicate clients',
+      );
+    }
+
+    return uniqueClients;
   }
 
-  void _startGeofenceMonitoringForClient(String? clientGuid) {
+  /// Prepare client markers for map display
+  /// Uses the same filtering logic as dropdown
+  List<ClientMarkerData> _getClientMarkersForMap() {
+    if (_latitude == null || _longitude == null) {
+      return []; // No markers if no location
+    }
+
+    // ✨ Get filtered clients based on current job type's geofence setting
+    final filteredClients = _getNearbyClients();
+
+    // ✅ Check if geofence filtering is enabled for this job type
+    final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+    final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+    final shouldFilterByGeofence = jobTypeConfig['geofence_filter'] ?? false;
+
+    // ✨ Get the configured radius for filtering (only used if filtering is enabled)
+    final configRadius =
+        attendance.getRadiusForJobType(_selectedJobType) ??
+        GeofenceConfig.clientFilterRadius;
+
+    // debugPrint(
+    //   '📍 [_getClientMarkersForMap] JobType: $_selectedJobType, geofence_filter: $shouldFilterByGeofence, configRadius: $configRadius, filteredClients: ${filteredClients.length}',
+    // );
+
+    // Convert to marker data
+    final markers = <ClientMarkerData>[];
+
+    for (var client in filteredClients) {
+      final locationData = client['LOCATION_DATA'] as List<dynamic>?;
+      if (locationData == null || locationData.isEmpty) continue;
+
+      // ✨ NEW: Create a marker for EVERY valid location
+      for (var location in locationData) {
+        final locationGuid = location['LOCATION_GUID'] as String?;
+        final clientLat = (location['LATITUDE'] as num?)?.toDouble();
+        final clientLng = (location['LONGITUDE'] as num?)?.toDouble();
+        final address = location['ADDRESS'] as String?;
+
+        if (clientLat == null || clientLng == null) continue;
+
+        // Calculate distance from user
+        final distance = GeofenceHelper.calculateDistance(
+          _latitude!,
+          _longitude!,
+          clientLat,
+          clientLng,
+        );
+
+        // ✅ FIX: Only apply distance filter if geofence filtering is enabled
+        // If geofence filtering is disabled, show all markers (matching dropdown behavior)
+        // If geofence filtering is enabled, only show markers within configured radius
+        if (!shouldFilterByGeofence || distance <= configRadius) {
+          markers.add(
+            ClientMarkerData(
+              clientGuid: client['CLIENT_GUID'] as String,
+              locationGuid: locationGuid, // ✨ NEW
+              name: client['NAME'] as String? ?? 'Unknown',
+              abbreviation: client['ABBR'] as String? ?? 'N/A',
+              latitude: clientLat,
+              longitude: clientLng,
+              address: address, // ✨ NEW
+              distance: distance,
+            ),
+          );
+        }
+      }
+    }
+
+    // debugPrint(
+    //   '📍 [_getClientMarkersForMap] Created ${markers.length} markers for map display',
+    // );
+    return markers;
+  }
+
+  Future<void> _startGeofenceMonitoringForClient(String? clientGuid) async {
+    // ✨ NEW: Check if auto clock-out is enabled for this job type
+    final attendance = Provider.of<AttendanceProvider>(context, listen: false);
+    final isAutoClockOutEnabled = attendance.isAutoClockOutEnabledForJobType(
+      _selectedJobType,
+    );
+
+    if (!isAutoClockOutEnabled) {
+      LoggerService.logGeofenceStop(
+        '[_startGeofenceMonitoringForClient] Auto clock-out DISABLED for $_selectedJobType (geofence monitoring not started)',
+      );
+      return; // Skip geofence monitoring if auto clock-out is disabled
+    }
+
     // Use user's current location as geofence center (where they clocked in)
     // This way, auto clock-out triggers when they move 500m from their clock-in position
     final targetLat = _latitude;
@@ -363,22 +1331,56 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    debugPrint('🎯 Starting geofence monitoring');
-    debugPrint('   Target: $targetLat, $targetLng');
-    debugPrint('   Radius: 500.0m');
-    debugPrint('   Check interval: 15s');
-    debugPrint('   Required violations: 2');
+    // ✨ Get configured radius for current job type
 
-    _autoClockOutService?.startMonitoring(
+    // ✅ DEBUG: Log what we're about to look up
+    LoggerService.logGeofenceStart(
+      '[_startGeofenceMonitoringForClient] _selectedJobType: "$_selectedJobType"',
+    );
+
+    final configRadius =
+        attendance.getRadiusForJobType(_selectedJobType) ??
+        GeofenceConfig.autoClockOutRadius;
+
+    // ✅ DEBUG: Log the result
+    LoggerService.logGeofenceStart(
+      '[_startGeofenceMonitoringForClient] getRadiusForJobType returned: ${attendance.getRadiusForJobType(_selectedJobType)}',
+    );
+
+    LoggerService.logGeofenceStart('Starting geofence monitoring');
+    LoggerService.logWithEmoji('   🎯', 'Target: $targetLat, $targetLng');
+    LoggerService.logDistance('Current radius in service: ${configRadius}m');
+    LoggerService.logWithEmoji('   ⏱️', 'Check interval: 15s');
+    LoggerService.logWithEmoji('   ✓', 'Required violations: 2');
+
+    await _autoClockOutService?.startMonitoring(
       targetLat: targetLat,
       targetLng: targetLng,
       targetAddress: targetAddress,
+      radiusInMeters: configRadius, // ✨ Use dynamic radius
     );
   }
 
   /// Start background tracking for auto clock-out when app is closed
   Future<void> _startBackgroundTracking() async {
     try {
+      // ✨ NEW: Check if auto clock-out is enabled for this job type
+      final attendance = Provider.of<AttendanceProvider>(
+        context,
+        listen: false,
+      );
+      final isAutoClockOutEnabled = attendance.isAutoClockOutEnabledForJobType(
+        _selectedJobType,
+      );
+
+      if (!isAutoClockOutEnabled) {
+        LoggerService.warning(
+          'Auto clock-out DISABLED for $_selectedJobType (background tracking not started)',
+          tag: 'BackgroundTracking',
+        );
+        return; // Skip background tracking if auto clock-out is disabled
+      }
+
       // Request notification permission
       final notificationGranted =
           await NotificationService.requestPermissions();
@@ -389,33 +1391,10 @@ class _HomePageState extends State<HomePage> {
 
       // Get target location (same logic as foreground geofence)
       // Use user's current location as geofence center (where they clocked in)
+      // This ensures consistency between foreground and background monitoring
       double? targetLat = _latitude;
       double? targetLng = _longitude;
       String? targetAddress = _currentAddress;
-
-      // Use test mode if enabled
-      const bool testMode = false;
-      if (testMode && _latitude != null && _longitude != null) {
-        targetLat = _latitude;
-        targetLng = _longitude;
-        targetAddress = "Test Location - Your Current Position";
-      } else if (_selectedClient != null && _selectedClient!.isNotEmpty) {
-        // Find client from list
-        try {
-          final client = _clients.firstWhere(
-            (c) => c['CLIENT_GUID'] == _selectedClient,
-          );
-          final locationData = client['LOCATION_DATA'] as List<dynamic>?;
-          if (locationData != null && locationData.isNotEmpty) {
-            final location = locationData[0];
-            targetLat = (location['LATITUDE'] as num?)?.toDouble();
-            targetLng = (location['LONGITUDE'] as num?)?.toDouble();
-            targetAddress = location['ADDRESS'] as String?;
-          }
-        } catch (e) {
-          debugPrint('⚠️ Error getting client location: $e');
-        }
-      }
 
       if (targetLat == null || targetLng == null || _clockRefGuid == null) {
         debugPrint(
@@ -424,12 +1403,17 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
+      // ✨ Get configured radius for current job type
+      final configRadius =
+          attendance.getRadiusForJobType(_selectedJobType) ??
+          GeofenceConfig.autoClockOutRadius;
+
       // Start background tracking
       await BackgroundGeofenceService.startTracking(
         targetLat: targetLat,
         targetLng: targetLng,
         targetAddress: targetAddress ?? 'Work Location',
-        radiusInMeters: 500.0, // Same as foreground
+        radiusInMeters: configRadius, // ✨ Use dynamic radius
         clockRefGuid: _clockRefGuid!,
       );
 
@@ -442,10 +1426,16 @@ class _HomePageState extends State<HomePage> {
   // ===================== CLOCK IN/OUT =====================
 
   Future<void> _handleClockAction() async {
+    // ✅ FIX BUG #14: Prevent concurrent actions
+    if (_isProcessingClockAction) {
+      debugPrint('⚠️ Clock action already in progress, ignoring');
+      return;
+    }
+
     // Validation 1: Job type required
     if (_selectedJobType.isEmpty) {
       _showDialog(
-        'Error',
+        'Action Required',
         'Please select a job type (Office/Site/Home/Others)',
       );
       return;
@@ -455,24 +1445,84 @@ class _HomePageState extends State<HomePage> {
     if (!_isClockedIn &&
         _fieldVisibility['client'] == true &&
         _selectedClient == null) {
-      _showDialog('Error', 'Please select a client');
+      _showDialog('Action Required', 'Please select a client');
       return;
     }
 
     // Validation 3: Location required
     if (_latitude == null || _longitude == null) {
-      _showDialog('Error', 'Please get your current location first');
+      _showDialog('Action Required', 'Please get your current location first');
       return;
     }
 
-    if (_isClockedIn) {
-      await _performClockOut();
-    } else {
-      await _performClockIn();
+    // Validation 4: Background location permission required (only for clock in)
+    if (!_isClockedIn) {
+      try {
+        final hasPermission =
+            await LocationPermissionService.hasBackgroundPermission();
+        if (!hasPermission) {
+          // ✨ Simplified: Go directly to disclosure request instead of showing Red dialog first
+          final granted =
+              await LocationPermissionService.requestLocationPermissions(
+                context,
+              );
+
+          // Wait for UI to stabilize after returning from settings
+          await Future.delayed(const Duration(milliseconds: 100));
+
+          // Check if widget is still mounted after returning from settings
+          if (!mounted) {
+            debugPrint(
+              '⚠️ Widget unmounted after permission request, aborting clock-in',
+            );
+            return;
+          }
+
+          if (!granted) {
+            // Use postFrameCallback to ensure context is valid
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _showOpenSettingsDialog();
+            });
+            return;
+          }
+        }
+      } catch (e, stackTrace) {
+        debugPrint('❌ CRASH PREVENTED during permission check: $e');
+        debugPrint('Stack trace: $stackTrace');
+        // Use postFrameCallback for error dialog
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _showDialog(
+              'Permission Error',
+              'Unable to verify location permissions. Please try again.',
+            );
+          }
+        });
+        return;
+      }
+    }
+
+    // ✅ FIX BUG #14: Lock form during processing
+    setState(() => _isProcessingClockAction = true);
+
+    try {
+      if (_isClockedIn) {
+        await _performClockOut();
+      } else {
+        await _performClockIn();
+      }
+    } finally {
+      // ✅ Always unlock form after processing
+      if (mounted) {
+        setState(() => _isProcessingClockAction = false);
+      }
     }
   }
 
   Future<void> _performClockIn() async {
+    // ⏰ Mark timestamp to prevent premature UI refresh
+    _lastClockActionTime = DateTime.now();
+
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final userGuid = auth.userInfo?['userId'] ?? '';
 
@@ -493,29 +1543,143 @@ class _HomePageState extends State<HomePage> {
     );
 
     if (result['success'] && mounted) {
+      debugPrint('✅ Clock-in successful');
+      // debugPrint('   Clock time from clock-in API: ${result['clockTime']}');
+
+      final clockLogGuid = result['clockLogGuid'];
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      final userGuid = auth.userInfo?['userId'] ?? '';
+
+      // ✨ AUDIT LOG: Storage updates
+      await ClockAuditLogger.logStorageUpdate(
+        layer: 'Memory',
+        operation: 'Clock-in state saved',
+        clockRefGuid: clockLogGuid,
+        details: 'UI state updated',
+      );
+
       setState(() {
         _isClockedIn = true;
-        _clockRefGuid = result['clockLogGuid'];
+        _clockRefGuid = clockLogGuid;
         _clockInTime = result['clockTime'];
-        _clockStatus = result['clockTime'];
+        _clockStatus = _formatClockTime(result['clockTime']); // ✨ Format time
       });
 
       // ✨ START GEOFENCE MONITORING AFTER CLOCK IN
-      _startGeofenceMonitoringForClient(_selectedClient);
+      await AutoClockOutService.resetGlobalLock();
+      await _startGeofenceMonitoringForClient(_selectedClient);
+
+      // ✨ AUDIT LOG: Service start
+      await ClockAuditLogger.logServiceStart(
+        serviceType: 'ForegroundGeofence',
+        clockRefGuid: clockLogGuid,
+        targetLocation: _selectedClient ?? 'unknown',
+      );
 
       // ✨ REQUEST NOTIFICATION PERMISSION AND START BACKGROUND TRACKING
       await _startBackgroundTracking();
 
-      _showSuccessDialog('Clock In Successful', 'Time: ${result['clockTime']}');
+      // ✨ Set initial foreground flag (app is currently open)
+      try {
+        await FlutterForegroundTask.saveData(
+          key: 'appInForeground',
+          value: true,
+        );
+      } catch (e) {
+        debugPrint('⚠️ Error setting initial foreground flag: $e');
+      }
+
+      // ✨ NEW: Check for battery optimization (Android specific)
+      if (Platform.isAndroid) {
+        try {
+          final isOptimized =
+              await Permission.ignoreBatteryOptimizations.isDenied;
+          if (isOptimized && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Row(
+                  children: [
+                    const Icon(
+                      Icons.battery_alert_rounded,
+                      color: Colors.orange,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'Disable "Battery Optimization" for accurate tracking.',
+                        style: TextStyle(fontSize: 13, color: Colors.white),
+                      ),
+                    ),
+                  ],
+                ),
+                backgroundColor: const Color(
+                  0xFF333333,
+                ), // Professional dark grey
+                behavior: SnackBarBehavior.floating,
+                margin: const EdgeInsets.all(16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                duration: const Duration(seconds: 8),
+                action: SnackBarAction(
+                  label: 'FIX',
+                  textColor: Colors.orange,
+                  onPressed: () {
+                    openAppSettings();
+                  },
+                ),
+              ),
+            );
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error checking battery optimization: $e');
+        }
+      }
+
+      // ✨ Update pending sync count after action
+      try {
+        final count = await PendingSyncService.getPendingCount();
+        if (mounted) setState(() => _pendingSyncCount = count);
+      } catch (e) {
+        debugPrint('⚠️ Error updating pending count: $e');
+      }
+
+      // ✨ Show appropriate success message
+      if (result['offline'] == true) {
+        // Queued due to slow/offline connection
+        _showSuccessDialog(
+          'Clock In Saved',
+          'Time: ${_formatClockTime(result['clockTime'])}\n\n'
+              'Saved locally. Will sync automatically when online.',
+        );
+      } else {
+        _showSuccessDialog(
+          'Clock In Successful',
+          'Time: ${_formatClockTime(result['clockTime'])}',
+        );
+      }
     } else {
-      _showDialog('Error', result['message'] ?? 'Clock in failed');
+      // ✨ Check for multi-device conflict
+      if (result['multiDeviceConflict'] == true) {
+        _showMultiDeviceConflictDialog(
+          'Already Clocked In',
+          result['message'] ?? 'You have already clocked in on another device.',
+        );
+      } else {
+        _showDialog('Error', result['message'] ?? 'Clock in failed');
+      }
     }
   }
 
   Future<void> _performClockOut({
     bool isAutomatic = false,
     double? distance,
+    String? reason,
   }) async {
+    // ⏰ Mark timestamp to prevent premature UI refresh
+    _lastClockActionTime = DateTime.now();
+
     if (_clockRefGuid == null) {
       _showDialog('Error', 'No clock in record found');
       return;
@@ -523,8 +1687,21 @@ class _HomePageState extends State<HomePage> {
 
     // ✨ STOP FOREGROUND AND BACKGROUND MONITORING
     _autoClockOutService?.stopMonitoring();
+
+    // ✨ AUDIT LOG: Service stop before clock-out
+    await ClockAuditLogger.logServiceStop(
+      serviceType: 'ForegroundGeofence',
+      reason: isAutomatic ? 'Auto clock-out triggered' : 'Manual clock-out',
+    );
+
     try {
       await BackgroundGeofenceService.stopTracking();
+
+      // ✨ AUDIT LOG: Background service stop
+      await ClockAuditLogger.logServiceStop(
+        serviceType: 'BackgroundGeofence',
+        reason: isAutomatic ? 'Auto clock-out triggered' : 'Manual clock-out',
+      );
     } catch (e) {
       debugPrint('⚠️ Error stopping background tracking: $e');
     }
@@ -549,17 +1726,45 @@ class _HomePageState extends State<HomePage> {
       deviceId: DeviceInfoHelper.deviceId,
     );
 
+    // ✨ NEW: Always reset the global lock after a clock-out attempt
+    await AutoClockOutService.resetGlobalLock();
+
     if (result['success'] && mounted) {
+      // ✨ AUDIT LOG: Clock-out success
+      await ClockAuditLogger.logClockOut(
+        clockRefGuid: _clockRefGuid!,
+        userId: userGuid,
+        isOnline: result['offline'] != true,
+        isAutomatic: isAutomatic,
+        reason: reason,
+      );
+
+      // ✨ AUDIT LOG: Service stop
+      await ClockAuditLogger.logServiceStop(
+        serviceType: 'ForegroundGeofence',
+        reason: isAutomatic ? 'Auto clock-out' : 'Manual clock-out',
+      );
+
       if (!isAutomatic) {
-        _showSuccessDialog(
-          'Clock Out Successful',
-          'In: $_clockInTime\nOut: ${result['clockTime']}',
-        );
+        // ✨ Show appropriate success message
+        if (result['offline'] == true) {
+          _showSuccessDialog(
+            'Clock Out Saved',
+            'In: ${_formatClockTime(_clockInTime)}\nOut: ${_formatClockTime(result['clockTime'])}\n\n'
+                'Saved locally. Will sync automatically when online.',
+          );
+        } else {
+          _showSuccessDialog(
+            'Clock Out Successful',
+            'In: ${_formatClockTime(_clockInTime)}\nOut: ${_formatClockTime(result['clockTime'])}',
+          );
+        }
       } else {
         // Show persistent notification for auto clock-out
         await NotificationService.showAutoClockOutNotification(
           distance: distance ?? 0.0,
           location: _currentAddress ?? 'Work Location',
+          reason: reason,
         );
       }
 
@@ -574,15 +1779,85 @@ class _HomePageState extends State<HomePage> {
         _activityController.clear();
         _fieldVisibility = {};
       });
+
+      // ✨ AUDIT LOG: Storage cleared
+      await ClockAuditLogger.logStorageUpdate(
+        layer: 'Memory',
+        operation: 'Clock state cleared',
+        details: 'Clock-out completed, state reset',
+      );
+
+      // ⚠️ CRITICAL: Explicitly stop monitoring to prevent ghost checks
+      _autoClockOutService?.stopMonitoring();
+      debugPrint('🛑 Explicitly stopped geofence monitoring after clock out');
+
+      // ✨ Update pending sync count after action
+      try {
+        final count = await PendingSyncService.getPendingCount();
+        if (mounted) setState(() => _pendingSyncCount = count);
+      } catch (e) {
+        debugPrint('⚠️ Error updating pending count: $e');
+      }
     } else {
-      _showDialog('Error', result['message'] ?? 'Clock out failed');
+      // ✨ Check for multi-device conflict
+      if (result['multiDeviceConflict'] == true) {
+        // If it's automatic clock-out, just update UI silently (already clocked out)
+        if (isAutomatic) {
+          debugPrint(
+            '⚠️ Auto clock-out: Already clocked out on another device, updating UI',
+          );
+          setState(() {
+            _isClockedIn = false;
+            _clockRefGuid = null;
+            _clockStatus = "You Haven't Clocked In Yet";
+            _selectedJobType = '';
+            _selectedClient = null;
+            _selectedProject = null;
+            _selectedContract = null;
+            _activityController.clear();
+            _fieldVisibility = {};
+          });
+
+          // ⚠️ Stop monitoring in case of multi-device conflict
+          _autoClockOutService?.stopMonitoring();
+        } else {
+          // Manual clock-out: show dialog
+          _showMultiDeviceConflictDialog(
+            'Already Clocked Out',
+            result['message'] ??
+                'You have already clocked out on another device.',
+          );
+        }
+      } else {
+        _showDialog('Error', result['message'] ?? 'Clock out failed');
+      }
     }
   }
 
   // ===================== UI HELPERS =====================
 
   void _onJobTypeSelected(String jobType) {
-    setState(() => _selectedJobType = jobType);
+    setState(() {
+      _selectedJobType = jobType;
+
+      // ✨ FIX: Clear selected client if it's not in the new filtered list
+      // This prevents dropdown errors when switching between job types with different geofence filters
+      if (_selectedClient != null) {
+        final filteredClients = _getNearbyClients();
+        final clientExists = filteredClients.any(
+          (client) => client['CLIENT_GUID'] == _selectedClient,
+        );
+
+        if (!clientExists) {
+          debugPrint(
+            '⚠️ Selected client not in filtered list for $jobType, clearing selection',
+          );
+          _selectedClient = null;
+          _selectedProject = null;
+          _selectedContract = null;
+        }
+      }
+    });
     _updateFieldVisibility(jobType);
   }
 
@@ -604,8 +1879,393 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text(title),
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF667eea), // Purple-blue
+                Color(0xFF764ba2), // Deep purple
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF667eea).withOpacity(0.3),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF667eea),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ✨ NEW: Show dialog to open app settings
+  void _showOpenSettingsDialog() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFFF59E0B), // Orange
+                Color(0xFFEA580C), // Dark orange
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.settings,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'Permission Denied',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'You need to manually grant background location permission in app settings.\n\nGo to Settings → Permissions → Location → Allow all the time',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Buttons
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Colors.white, width: 2),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          await LocationPermissionService.openAppSettings();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFFF59E0B),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Open Settings',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showSuccessDialog(String title, String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF2DD36F), // Green
+                Color(0xFF10B981), // Emerald green
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF2DD36F).withOpacity(0.3),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check_circle_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF2DD36F),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showLocationDisabledDialog() {
+    _showSafetyDialog(
+      title: 'Location Service Disabled',
+      message:
+          'Location services have been turned off. For accurate attendance tracking, we have automatically clocked you out.',
+      icon: Icons.location_off,
+      color: Colors.orange,
+    );
+  }
+
+  void _showAutoClockOutDialog(double distance) {
+    _showSafetyDialog(
+      title: 'Auto Clock Out',
+      message:
+          'You have moved ${distance.toStringAsFixed(0)}m away from your work location. For your safety and attendance integrity, we have automatically clocked you out.',
+      icon: Icons.location_on,
+      color: Colors.orange,
+    );
+  }
+
+  void _showPermissionRevokedDialog() {
+    _showSafetyDialog(
+      title: 'Location Permission Revoked',
+      message:
+          'Location permissions have been removed. For your safety and attendance integrity, we have automatically clocked you out.',
+      icon: Icons.security,
+      color: Colors.red,
+    );
+  }
+
+  void _showSafetyDialog({
+    required String title,
+    required String message,
+    required IconData icon,
+    required Color color,
+  }) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: Row(
+          children: [
+            Icon(icon, color: color),
+            const SizedBox(width: 10),
+            Expanded(child: Text(title)),
+          ],
+        ),
         content: Text(message),
         actions: [
           TextButton(
@@ -617,22 +2277,81 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _showSuccessDialog(String title, String message) {
+  /// ✨ Show dialog for multi-device conflicts with refresh option
+  void _showMultiDeviceConflictDialog(String title, String message) {
     if (!mounted) return;
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF2DD36F),
-        title: Text(
-          title,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white),
+        backgroundColor: Colors.orange,
+        title: Row(
+          children: [
+            const Icon(Icons.devices, color: Colors.white, size: 28),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
         ),
-        content: Text(message, style: const TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              message,
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.white, size: 20),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Please refresh the page to sync the latest status.',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
+            child: const Text('Close', style: TextStyle(color: Colors.white70)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(context);
+              // Refresh the page data
+              await _initializeData();
+            },
+            icon: const Icon(Icons.refresh, size: 20),
+            label: const Text('Refresh Now'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.orange,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
           ),
         ],
       ),
@@ -641,6 +2360,116 @@ class _HomePageState extends State<HomePage> {
 
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+
+  /// ⚡ Determine if we should cache the location (throttle writes)
+  /// Only cache if moved more than 50 meters from last cached position
+  bool _shouldCacheLocation(Position position) {
+    // First time - always cache
+    if (_lastCachedLat == null || _lastCachedLng == null) {
+      _lastCachedLat = position.latitude;
+      _lastCachedLng = position.longitude;
+      return true;
+    }
+
+    // Calculate distance from last cached position
+    final distance = Geolocator.distanceBetween(
+      _lastCachedLat!,
+      _lastCachedLng!,
+      position.latitude,
+      position.longitude,
+    );
+
+    // Only cache if moved more than 50 meters (reduces storage writes)
+    if (distance > 50) {
+      _lastCachedLat = position.latitude;
+      _lastCachedLng = position.longitude;
+      return true;
+    }
+
+    return false;
+  }
+
+  /// Parse clock time string to DateTime object
+  DateTime? _parseClockInTime(String? timeString) {
+    if (timeString == null || timeString.isEmpty) return null;
+
+    try {
+      // debugPrint('🕐 Parsing clock time: "$timeString"');
+
+      DateTime parsedTime;
+
+      // CASE 1: ISO 8601 with 'Z' (e.g., "2025-12-04T11:40:04.000Z")
+      // Already in UTC format with explicit marker
+      if (timeString.contains('T') && timeString.endsWith('Z')) {
+        parsedTime = DateTime.parse(timeString).toLocal();
+        // debugPrint('   → Case 1 (ISO with Z): Parsed as ${parsedTime.toIso8601String()}');
+        return parsedTime;
+      }
+      // CASE 2: ISO without 'Z' (e.g., "2025-12-04T03:40:27")
+      // Try UTC first, but check if result makes sense
+      else if (timeString.contains('T') && !timeString.endsWith('Z')) {
+        // Try as UTC
+        final utcResult = DateTime.parse(timeString + 'Z').toLocal();
+        final now = DateTime.now();
+
+        // If UTC conversion creates future time (>5 min ahead), it's probably already local
+        if (utcResult.isAfter(now.add(Duration(minutes: 5)))) {
+          parsedTime = DateTime.parse(timeString); // Parse as local
+          // debugPrint('   → Case 2 (ISO as LOCAL): Parsed as ${parsedTime.toIso8601String()}');
+        } else {
+          parsedTime = utcResult;
+          // debugPrint('   → Case 2 (ISO as UTC): Parsed as ${parsedTime.toIso8601String()}');
+        }
+        return parsedTime;
+      }
+      // CASE 3: Space separated (e.g., "2025-12-04 03:40:27" or "2025-12-04 15:34:40")
+      // Server inconsistently returns UTC OR local time in this format
+      // Smart detection: Try UTC first, if result is in future, treat as local
+      else if (timeString.contains(' ')) {
+        final isoString = timeString.replaceAll(' ', 'T');
+
+        // Try as UTC first
+        final utcResult = DateTime.parse(isoString + 'Z').toLocal();
+        final now = DateTime.now();
+
+        // If UTC conversion creates future time (>5 min ahead), it's already local time
+        if (utcResult.isAfter(now.add(Duration(minutes: 5)))) {
+          parsedTime = DateTime.parse(isoString); // Parse as local
+          // debugPrint('   → Case 3 (Space as LOCAL): Parsed as ${parsedTime.toIso8601String()}');
+        } else {
+          parsedTime = utcResult;
+          // debugPrint('   → Case 3 (Space as UTC): Parsed as ${parsedTime.toIso8601String()}');
+        }
+        return parsedTime;
+      }
+      // CASE 4: Unknown format - try parsing as-is
+      else {
+        // Try parsing as UTC first
+        try {
+          parsedTime = DateTime.parse(timeString + 'Z').toLocal();
+          // debugPrint('   → Case 4 (Fallback with Z): Parsed as ${parsedTime.toIso8601String()}');
+          return parsedTime;
+        } catch (e) {
+          // If that fails, try parsing without 'Z' (might be local time already)
+          parsedTime = DateTime.parse(timeString);
+          // debugPrint('   → Case 4 (Fallback without Z): Parsed as ${parsedTime.toIso8601String()}');
+          return parsedTime;
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error parsing clock time "$timeString": $e');
+      return null;
+    }
+  }
+
+  /// Format clock time to Malaysia timezone (GMT+8)
+  String _formatClockTime(String? timeString) {
+    final dateTime = _parseClockInTime(timeString);
+    if (dateTime == null) return 'N/A';
+
+    // Format to readable Malaysia time: "04 Dec 2025, 11:40 AM"
+    return DateFormat('dd MMM yyyy, hh:mm a').format(dateTime);
+  }
 
   // ===================== BUILD =====================
 
@@ -657,8 +2486,8 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(
-          176,
-        ), // AppBar height (56) + Banner height (120)
+          140,
+        ), // Reduced height to match tighter content (was 166)
         child: Container(
           decoration: const BoxDecoration(
             image: DecorationImage(
@@ -674,61 +2503,113 @@ class _HomePageState extends State<HomePage> {
                 elevation: 0,
                 title: const Text('beeWhere'),
                 actions: [
-                  if (isMonitoring)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 16),
-                      child: Row(
-                        children: const [
-                          Icon(
-                            Icons.location_on,
-                            color: Colors.green,
-                            size: 20,
-                          ),
-                          SizedBox(width: 4),
-                          Text('Tracking', style: TextStyle(fontSize: 12)),
-                        ],
+                  // Online/Offline status label
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _isOnline
+                          ? Colors.green.withOpacity(0.2)
+                          : Colors.red.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _isOnline ? Colors.green : Colors.red,
+                        width: 1.5,
                       ),
                     ),
-                ],
-              ),
-              // User info section (previously the banner)
-              Container(
-                height: 120,
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.account_circle,
-                      size: 80,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(width: 20),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Text(
-                          'Good Day!',
-                          style: TextStyle(fontSize: 16, color: Colors.white),
+                        Icon(
+                          _isOnline ? Icons.wifi : Icons.wifi_off,
+                          color: _isOnline ? Colors.green : Colors.red,
+                          size: 16,
                         ),
+                        const SizedBox(width: 4),
                         Text(
-                          email,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.white,
-                          ),
-                        ),
-                        Text(
-                          companyName,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.white,
+                          _isOnline ? 'Online' : 'Offline',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _isOnline ? Colors.green : Colors.red,
                           ),
                         ),
                       ],
                     ),
-                  ],
+                  ),
+                  const SizedBox(width: 8),
+
+                  // ✨ NEW: Pending sync badge
+                  if (_pendingSyncCount > 0)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.orange, width: 1.5),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.sync,
+                            color: Colors.orange,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Pending: $_pendingSyncCount',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.orange,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(width: 16),
+                ],
+              ),
+              // User info section (previously the banner)
+              Expanded(
+                child: Container(
+                  width: double.infinity,
+                  // Reduced top padding to pull text closer to AppBar title
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+                  child: Row(
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Good Day!',
+                            style: TextStyle(fontSize: 16, color: Colors.white),
+                          ),
+                          Text(
+                            email,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.white,
+                            ),
+                          ),
+                          Text(
+                            companyName,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -741,13 +2622,13 @@ class _HomePageState extends State<HomePage> {
         onTap: (index) {
           if (index == 1) {
             // Navigate to history page
-            Navigator.pushReplacementNamed(context, '/history');
+            Navigator.pushNamed(context, '/history');
           } else if (index == 2) {
             // Navigate to report page
-            Navigator.pushReplacementNamed(context, '/report');
+            Navigator.pushNamed(context, '/report');
           } else if (index == 3) {
             // Navigate to profile page
-            Navigator.pushReplacementNamed(context, '/profile');
+            Navigator.pushNamed(context, '/profile');
           }
           // If index == 0 (Home), do nothing as we're already here
         },
@@ -759,14 +2640,14 @@ class _HomePageState extends State<HomePage> {
           child: Column(
             children: [
               _buildTimeCard(),
-              const SizedBox(height: 10),
+              // const SizedBox(height: 10),
               _buildJobTypeButtons(attendance),
-              _buildLocationDisplay(),
               if (_selectedJobType.isNotEmpty) _buildForm(),
-              const SizedBox(height: 20),
+              _buildLocationDisplay(),
+              const SizedBox(height: 5),
               _buildClockButton(),
-              if (_isClockedIn) _buildGeofenceStatus(),
-              const SizedBox(height: 30),
+              // if (_isClockedIn) _buildGeofenceStatus(),
+              const SizedBox(height: 15),
             ],
           ),
         ),
@@ -813,9 +2694,9 @@ class _HomePageState extends State<HomePage> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    const Text(
-                      'Auto clock-out if you move >500m away',
-                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    Text(
+                      'Auto clock-out if you move >${_autoClockOutService?.radiusInMeters.toStringAsFixed(0) ?? 'N/A'}m away',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                   ],
                 ),
@@ -870,8 +2751,8 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildTimeCard() {
     return Container(
-      margin: const EdgeInsets.all(15),
-      padding: const EdgeInsets.all(15),
+      margin: const EdgeInsets.fromLTRB(10, 10, 10, 5),
+      padding: const EdgeInsets.fromLTRB(15, 5, 15, 5),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
@@ -886,12 +2767,12 @@ class _HomePageState extends State<HomePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Clock In',
+          Text(
+            _isClockedIn ? 'Clocked In' : 'Clock In',
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.bold,
-              color: Color(0xFF2DD36F),
+              color: _isClockedIn ? Colors.red : const Color(0xFF2DD36F),
             ),
           ),
           Text(
@@ -933,7 +2814,7 @@ class _HomePageState extends State<HomePage> {
     }
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 5),
       child: Row(
         children: visibleTypes.map((type) => _buildJobButton(type)).toList(),
       ),
@@ -949,8 +2830,8 @@ class _HomePageState extends State<HomePage> {
       child: GestureDetector(
         onTap: _isClockedIn ? null : () => _onJobTypeSelected(title),
         child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 10),
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 15),
+          padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
             color: isSelected ? purpleBlue : Colors.white,
             borderRadius: BorderRadius.circular(8),
@@ -970,51 +2851,142 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // Widget _buildLocationDisplay() {
+  //   return Padding(
+  //     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+  //     child: Row(
+  //       children: [
+  //         Expanded(
+  //           child: Container(
+  //             height: 50,
+  //             padding: const EdgeInsets.symmetric(horizontal: 12),
+  //             decoration: BoxDecoration(
+  //               color: Colors.grey.shade100,
+  //               borderRadius: BorderRadius.circular(8),
+  //               border: Border.all(color: Colors.grey.shade300),
+  //             ),
+  //             child: Center(
+  //               child: _isLoading
+  //                   ? const CircularProgressIndicator(strokeWidth: 2)
+  //                   : Text(
+  //                       _currentAddress,
+  //                       style: const TextStyle(fontSize: 14),
+  //                       overflow: TextOverflow.ellipsis,
+  //                     ),
+  //             ),
+  //           ),
+  //         ),
+  //         const SizedBox(width: 10),
+  //         Container(
+  //           decoration: BoxDecoration(
+  //             color: BeeColor.fillIcon,
+  //             borderRadius: BorderRadius.circular(30),
+  //             border: Border.all(color: Colors.black, width: 2),
+  //           ),
+  //           child: IconButton(
+  //             icon: const Icon(Icons.my_location),
+  //             onPressed: _isLoading ? null : _getCurrentPosition,
+  //           ),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
+
   Widget _buildLocationDisplay() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      child: Row(
-        children: [
-          Expanded(
-            child: Container(
-              height: 50,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Center(
-                child: _isLoading
-                    ? const CircularProgressIndicator(strokeWidth: 2)
-                    : Text(
-                        _currentAddress,
-                        style: const TextStyle(fontSize: 14),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
+    // ✨ Determine radius based on job type's geofence_filter setting
+    double? displayRadius;
+    if (_selectedJobType.isNotEmpty) {
+      final attendance = Provider.of<AttendanceProvider>(
+        context,
+        listen: false,
+      );
+      final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+      final shouldShowRadius = jobTypeConfig['geofence_filter'] ?? false;
+
+      if (shouldShowRadius) {
+        // ✨ Get dynamic radius (fallback to default)
+        final configRadius =
+            attendance.getRadiusForJobType(_selectedJobType) ??
+            GeofenceConfig.mapDisplayRadius;
+        displayRadius = configRadius;
+      }
+    }
+
+    return Column(
+      children: [
+        // 🗺️ Map display with refresh button inside
+        if (_latitude != null && _longitude != null)
+          LocationMapWidget(
+            latitude: _latitude!,
+            longitude: _longitude!,
+            height: 250,
+            showRefreshButton: true,
+            onRefresh: _isLoading ? null : _getCurrentPosition,
+            clientMarkers: _getClientMarkersForMap(),
+            radiusInMeters: displayRadius, // ✨ NEW: Pass radius
+          )
+        else
+          // Show placeholder when no location
           Container(
+            height: 250,
+            margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
             decoration: BoxDecoration(
-              color: BeeColor.fillIcon,
-              borderRadius: BorderRadius.circular(30),
-              border: Border.all(color: Colors.black, width: 2),
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade300, width: 2),
             ),
-            child: IconButton(
-              icon: const Icon(Icons.my_location),
-              onPressed: _isLoading ? null : _getCurrentPosition,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.location_off,
+                    size: 48,
+                    color: Colors.grey.shade400,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'No Location Available',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey.shade600,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    onPressed: _isLoading ? null : _getCurrentPosition,
+                    icon: _isLoading
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.my_location),
+                    label: Text(
+                      _isLoading ? 'Getting Location...' : 'Get Location',
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
   Widget _buildForm() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       child: Column(
         children: [
           if (_fieldVisibility['client'] == true)
@@ -1044,7 +3016,8 @@ class _HomePageState extends State<HomePage> {
               'NAME',
               (v) => setState(() => _selectedContract = v),
             ),
-          if (_fieldVisibility['activity'] == true) _buildActivityField(),
+          // Activity field hidden as per user request (editable in history later)
+          // if (_fieldVisibility['activity'] == true) _buildActivityField(),
         ],
       ),
     );
@@ -1058,54 +3031,174 @@ class _HomePageState extends State<HomePage> {
     String labelKey,
     Function(String?) onChanged,
   ) {
-    if (_loadingDropdowns)
+    if (_loadingDropdowns) {
       return const Padding(
         padding: EdgeInsets.all(10),
         child: CircularProgressIndicator(),
       );
+    }
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 15),
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey),
-      ),
-      child: DropdownButton<String>(
-        isExpanded: true,
-        underline: const SizedBox(),
-        hint: Text('Select $label'),
-        value: value,
-        items: items
-            .map(
-              (item) => DropdownMenuItem<String>(
-                value: item[valueKey],
-                child: Text(item[labelKey] ?? ''),
+    // Show helpful message when no clients are nearby
+    if (label == 'Client' && items.isEmpty) {
+      // ✨ NEW: Check if geofence filtering is enabled for current job type
+      final attendance = Provider.of<AttendanceProvider>(
+        context,
+        listen: false,
+      );
+      final jobTypeConfig = attendance.getFieldsForJobType(_selectedJobType);
+      final shouldFilterByGeofence = jobTypeConfig['geofence_filter'] ?? false;
+
+      // ✨ FIX: Don't show "No Clients Nearby" message if geofence filtering is disabled
+      // For Home/Others (geofence_filter=false), we should return all clients when they load
+      // So if items are empty, it's just a loading state - return empty container
+      if (!shouldFilterByGeofence) {
+        return const SizedBox.shrink(); // Return empty space while clients load
+      }
+
+      // ✨ Get configured radius for message (only if filtering is enabled)
+      final radius =
+          attendance.getRadiusForJobType(_selectedJobType) ??
+          GeofenceConfig.clientFilterRadius;
+
+      return Container(
+        margin: const EdgeInsets.only(bottom: 15),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.orange.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.orange.shade300),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.location_off, color: Colors.orange.shade700),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'No Clients Nearby',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.orange.shade900,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    GeofenceConfig.getNoClientsFoundMessage(radius),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.orange.shade800,
+                    ),
+                  ),
+                ],
               ),
-            )
-            .toList(),
-        onChanged: _isClockedIn ? null : onChanged,
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Find selected item label
+    String displayValue = 'Select $label';
+    if (value != null) {
+      // ✅ FIX: Use where+firstOrNull instead of firstWhere(orElse: () => null)
+      // orElse must return Map<String, dynamic>, not null (Dart null safety).
+      // This was causing a grey-screen crash when going offline with a selected client.
+      final selectedItem = items
+          .cast<Map<String, dynamic>>()
+          .where((item) => item[valueKey] == value)
+          .firstOrNull;
+      if (selectedItem != null) {
+        displayValue = selectedItem[labelKey] ?? '';
+      }
+    }
+
+    return GestureDetector(
+      onTap: _isClockedIn
+          ? null
+          : () => _showSelectionSheet(
+              label,
+              items,
+              value,
+              valueKey,
+              labelKey,
+              onChanged,
+            ),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 15),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey),
+          color: _isClockedIn ? Colors.grey.shade200 : Colors.white,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                displayValue,
+                style: TextStyle(
+                  fontSize: 16,
+                  color: value == null ? Colors.grey.shade600 : Colors.black87,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Icon(Icons.arrow_drop_down, color: Colors.grey.shade600),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildActivityField() {
-    return TextField(
-      controller: _activityController,
-      enabled: !_isClockedIn,
-      maxLines: 3,
-      onChanged: (v) => _activityName = v,
-      decoration: const InputDecoration(
-        labelText: 'Activity List',
-        hintText: 'Add task here',
-        border: OutlineInputBorder(),
-      ),
+  // ✨ NEW: Searchable Bottom Sheet
+  void _showSelectionSheet(
+    String label,
+    List<dynamic> items,
+    String? currentValue,
+    String valueKey,
+    String labelKey,
+    Function(String?) onChanged,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return SearchableSelectionSheet(
+          label: label,
+          items: items,
+          selectedValue: currentValue,
+          valueKey: valueKey,
+          labelKey: labelKey,
+          onSelected: (value) {
+            onChanged(value);
+            Navigator.pop(context); // Close the sheet
+          },
+        );
+      },
     );
   }
+
+  // Widget _buildActivityField() {
+  //   return TextField(
+  //     controller: _activityController,
+  //     enabled: !_isClockedIn,
+  //     maxLines: 3,
+  //     onChanged: (v) => _activityName = v,
+  //     decoration: const InputDecoration(
+  //       labelText: 'Activity List',
+  //       hintText: 'Add task here',
+  //       border: OutlineInputBorder(),
+  //     ),
+  //   );
+  // }
 
   Widget _buildClockButton() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       child: SlideAction(
         height: 60,
         sliderButtonIconSize: 20,

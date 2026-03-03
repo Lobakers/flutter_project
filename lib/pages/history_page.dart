@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:beewhere/controller/history_api.dart';
+import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
 import 'package:beewhere/widgets/drawer.dart';
@@ -6,6 +8,8 @@ import 'package:beewhere/widgets/edit_activity_dialog.dart';
 import 'package:beewhere/widgets/edit_time_request_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -35,6 +39,10 @@ class _HistoryPageState extends State<HistoryPage> {
   DateTime? _startDate;
   DateTime? _endDate;
 
+  // Connectivity state
+  bool _isOnline = true;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+
   @override
   void initState() {
     super.initState();
@@ -43,12 +51,32 @@ class _HistoryPageState extends State<HistoryPage> {
     _startDate = _endDate!.subtract(const Duration(days: 30));
 
     _scrollController.addListener(_onScroll);
-    _loadHistory();
+    _initConnectivityListener();
+
+    // ⚡ PERFORMANCE: Load cache first for instant UI
+    _loadCachedHistory();
+
+    // Then refresh from API in background (non-blocking)
+    _refreshHistoryFromApi();
+  }
+
+  void _initConnectivityListener() {
+    _isOnline = ConnectivityService.isOnline;
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      ConnectivityResult result,
+    ) {
+      if (mounted) {
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
     _scrollController.dispose();
+    _connectivitySubscription?.cancel();
     super.dispose();
   }
 
@@ -62,17 +90,50 @@ class _HistoryPageState extends State<HistoryPage> {
     }
   }
 
+  // ⚡ NEW: Load cached history for instant UI
+  Future<void> _loadCachedHistory() async {
+    try {
+      final cachedRecords = await OfflineDatabase.getAttendanceHistory(
+        limit: 100, // Load more from cache for instant display
+      );
+
+      if (cachedRecords.isNotEmpty && mounted) {
+        setState(() {
+          _records = cachedRecords;
+          _totalHours = HistoryApi.calculateTotalHours(_records);
+        });
+        debugPrint(
+          '⚡ Loaded ${cachedRecords.length} history records from cache (instant UI)',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading cached history: $e');
+    }
+  }
+
+  // ⚡ NEW: Refresh from API in background (non-blocking)
+  void _refreshHistoryFromApi() {
+    // Fire-and-forget API call - doesn't block UI
+    _loadHistory()
+        .then((_) {
+          debugPrint('✅ History refreshed from API');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Failed to refresh history from API: $e');
+        });
+  }
+
   Future<void> _loadHistory() async {
     if (!mounted) return;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
 
-      // ✅ Reset cumulative counters
+      // ✅ Reset cumulative counters (but don't clear _records - keep cache visible)
       _currentLimit = 5;
       _previousRecordCount = 0;
 
-      _records = [];
+      // Don't clear _records - keep cached data visible during refresh
       _hasMore = true;
     });
 
@@ -163,15 +224,23 @@ class _HistoryPageState extends State<HistoryPage> {
   Future<void> _showEditActivityDialog(Map<String, dynamic> record) async {
     final clockGuid = record['CLOCK_LOG_GUID'] ?? record['clockLogGuid'];
     if (clockGuid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot edit: missing clock ID')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot edit: missing clock ID')),
+        );
+      }
       return;
     }
 
+    // Extract activities to pass to dialog
+    final activities = record['ACTIVITY'] as List<dynamic>?;
+
     final result = await showDialog<bool>(
       context: context,
-      builder: (context) => EditActivityDialog(clockGuid: clockGuid),
+      builder: (context) => EditActivityDialog(
+        clockGuid: clockGuid,
+        initialActivities: activities,
+      ),
     );
 
     if (result == true) {
@@ -182,22 +251,36 @@ class _HistoryPageState extends State<HistoryPage> {
   Future<void> _showEditTimeDialog(Map<String, dynamic> record) async {
     final clockGuid = record['CLOCK_LOG_GUID'] ?? record['clockLogGuid'];
     if (clockGuid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot edit: missing clock ID')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot edit: missing clock ID')),
+        );
+      }
       return;
     }
 
+    // Extract times to pass to dialog
+    final clockInTime =
+        record['CLOCK_IN_TIME'] ?? record['clockInTime'] as String?;
+    final clockOutTime =
+        record['CLOCK_OUT_TIME'] ?? record['clockOutTime'] as String?;
+
     final result = await showDialog<bool>(
       context: context,
-      builder: (context) => EditTimeRequestDialog(clockGuid: clockGuid),
+      builder: (context) => EditTimeRequestDialog(
+        clockGuid: clockGuid,
+        initialClockInTime: clockInTime,
+        initialClockOutTime: clockOutTime,
+      ),
     );
 
     if (result == true) {
-      // Optionally refresh
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Your request has been submitted')),
-      );
+      if (mounted) {
+        // Optionally refresh or show message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Your request has been submitted')),
+        );
+      }
     }
   }
 
@@ -219,11 +302,42 @@ class _HistoryPageState extends State<HistoryPage> {
             elevation: 0,
             title: const Text('Attendance History'),
             actions: [
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                onPressed: _loadHistory,
-                tooltip: 'Refresh',
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _isOnline
+                      ? Colors.green.withOpacity(0.2)
+                      : Colors.red.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _isOnline ? Colors.green : Colors.red,
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _isOnline ? Icons.wifi : Icons.wifi_off,
+                      color: _isOnline ? Colors.green : Colors.red,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _isOnline ? 'Online' : 'Offline',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _isOnline ? Colors.green : Colors.red,
+                      ),
+                    ),
+                  ],
+                ),
               ),
+              const SizedBox(width: 16),
             ],
           ),
         ),
@@ -246,12 +360,12 @@ class _HistoryPageState extends State<HistoryPage> {
         children: [
           _buildSummaryCard(),
           Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _errorMessage != null
+            child: _errorMessage != null
                 ? _buildErrorView()
                 : _records.isEmpty
-                ? _buildEmptyView()
+                ? _isLoading
+                      ? const Center(child: CircularProgressIndicator())
+                      : _buildEmptyView()
                 : _buildHistoryList(),
           ),
         ],
@@ -493,22 +607,22 @@ class _HistoryPageState extends State<HistoryPage> {
             ],
 
             // Address
-            const SizedBox(height: 8),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.location_on, size: 16, color: Colors.grey),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    address,
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
+            // const SizedBox(height: 8),
+            // Row(
+            //   crossAxisAlignment: CrossAxisAlignment.start,
+            //   children: [
+            //     const Icon(Icons.location_on, size: 16, color: Colors.grey),
+            //     const SizedBox(width: 5),
+            //     Expanded(
+            //       child: Text(
+            //         address,
+            //         style: const TextStyle(fontSize: 12, color: Colors.grey),
+            //         maxLines: 2,
+            //         overflow: TextOverflow.ellipsis,
+            //       ),
+            //     ),
+            //   ],
+            // ),
 
             // Activities (if available)
             if (activityNames.isNotEmpty) ...[

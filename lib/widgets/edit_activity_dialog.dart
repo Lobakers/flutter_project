@@ -3,8 +3,13 @@ import 'package:flutter/material.dart';
 
 class EditActivityDialog extends StatefulWidget {
   final String clockGuid;
+  final List<dynamic>? initialActivities;
 
-  const EditActivityDialog({super.key, required this.clockGuid});
+  const EditActivityDialog({
+    super.key,
+    required this.clockGuid,
+    this.initialActivities,
+  });
 
   @override
   State<EditActivityDialog> createState() => _EditActivityDialogState();
@@ -23,6 +28,28 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
   }
 
   Future<void> _loadActivities() async {
+    // If we have initial activities, use them directly (Offline support)
+    if (widget.initialActivities != null) {
+      setState(() {
+        _clockLogGuid = widget.clockGuid;
+        // Populate controllers
+        _activityControllers = (widget.initialActivities!)
+            .map(
+              (e) => TextEditingController(
+                text: (e is Map ? e['name'] : e).toString(),
+              ),
+            )
+            .toList();
+
+        if (_activityControllers.isEmpty) {
+          _activityControllers.add(TextEditingController());
+        }
+        _isLoading = false;
+      });
+      return;
+    }
+
+    // Otherwise fetch from API (Online behavior)
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -33,7 +60,6 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
     if (mounted) {
       if (result['success']) {
         final data = result['data'];
-        // API returns an array, take first element
         final recordData = data is List ? data[0] : data;
 
         setState(() {
@@ -42,14 +68,12 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
           final activityData =
               recordData['ACTIVITY'] ?? recordData['activity'] ?? [];
 
-          // Create text controllers for each activity
           _activityControllers = (activityData as List)
               .map(
                 (e) => TextEditingController(text: e['name']?.toString() ?? ''),
               )
               .toList();
 
-          // If no activities exist, add one empty field
           if (_activityControllers.isEmpty) {
             _activityControllers.add(TextEditingController());
           }
@@ -78,11 +102,116 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
     });
   }
 
+  void _showErrorDialog(String title, String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF667eea), // Purple-blue
+                Color(0xFF764ba2), // Deep purple
+              ],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF667eea).withOpacity(0.3),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon section
+              Container(
+                margin: const EdgeInsets.only(top: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Title
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Message
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF667eea),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _saveActivities() async {
     if (_clockLogGuid == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Missing clock ID')));
+      _showErrorDialog('Error', 'Missing clock ID');
       return;
     }
 
@@ -97,6 +226,15 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
         )
         .toList();
 
+    // Validate that at least one activity is entered
+    if (activities.isEmpty) {
+      _showErrorDialog(
+        'Action Required',
+        'Please enter at least one activity before saving',
+      );
+      return;
+    }
+
     final result = await HistoryApi.updateActivity(
       context,
       _clockLogGuid!,
@@ -108,24 +246,107 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
         // Show styled success dialog first
         await showDialog(
           context: context,
-          builder: (_) => AlertDialog(
-            backgroundColor: const Color(0xFF2DD36F),
-            title: const Text(
-              'Activity Updated',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white),
+          builder: (_) => Dialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
             ),
-            content: const Text(
-              'Your activity has been updated successfully',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('OK', style: TextStyle(color: Colors.white)),
+            elevation: 8,
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF2DD36F), // Green
+                    Color(0xFF10B981), // Emerald green
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF2DD36F).withOpacity(0.3),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
               ),
-            ],
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Icon section
+                  Container(
+                    margin: const EdgeInsets.only(top: 24),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.check_circle_rounded,
+                      color: Colors.white,
+                      size: 40,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Title
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      'Activity Updated',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Message
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      'Your activity has been updated successfully',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.9),
+                        fontSize: 14,
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  // Button
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF2DD36F),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: const Text(
+                          'OK',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         );
         // Then close the edit dialog and return to history page
@@ -175,11 +396,29 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
                               Expanded(
                                 child: TextField(
                                   controller: _activityControllers[index],
+                                  textInputAction: TextInputAction.next,
                                   decoration: InputDecoration(
                                     hintText: 'Activity ${index + 1}',
                                     isDense: true,
                                     border: const OutlineInputBorder(),
+                                    prefixIcon: const Icon(
+                                      Icons.circle,
+                                      size: 10,
+                                    ),
                                   ),
+                                  // ✨ When user presses Enter, create new activity field
+                                  onSubmitted: (value) {
+                                    if (value.trim().isNotEmpty) {
+                                      _addActivityField();
+                                      // ✨ Auto-focus the new field
+                                      Future.delayed(
+                                        const Duration(milliseconds: 100),
+                                        () {
+                                          FocusScope.of(context).requestFocus();
+                                        },
+                                      );
+                                    }
+                                  },
                                 ),
                               ),
                               if (_activityControllers.length > 1)
@@ -197,12 +436,18 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  // COMMENTED OUT: Add Activity button (not needed for single activity)
-                  // OutlinedButton.icon(
-                  //   onPressed: _addActivityField,
-                  //   icon: const Icon(Icons.add),
-                  //   label: const Text('Add Activity'),
-                  // ),
+                  // ✨ Info text about Enter key
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 0),
+                    child: Text(
+                      'Press Enter to add a new activity point',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
                 ],
               ),
       ),

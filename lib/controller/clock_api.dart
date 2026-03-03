@@ -1,6 +1,11 @@
 import 'dart:convert';
+import 'dart:math'; // ✨ NEW
 import 'package:beewhere/controller/api_service.dart';
 import 'package:beewhere/services/logger_service.dart';
+import 'package:beewhere/services/clock_audit_logger.dart';
+import 'package:beewhere/services/connectivity_service.dart';
+import 'package:beewhere/services/pending_sync_service.dart';
+import 'package:beewhere/services/offline_database.dart';
 import 'package:flutter/material.dart';
 import 'package:beewhere/routes/api.dart';
 
@@ -22,15 +27,19 @@ class ClockApi {
     required String deviceId,
   }) async {
     try {
+      // Check if online
+      final isOnline = await ConnectivityService.checkConnectivity();
+
+      final clockTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final body = {
         "userGuid": userGuid,
-        "clockTime": DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        "clockTime": clockTime,
         "clockType": 0, // 0 = Clock IN
         "sourceID": 1,
         "jobType": jobType,
         "location": {"lat": latitude, "long": longitude, "name": address},
         "clientId": clientId ?? "",
-        "projectGuid": projectId ?? "", // 👈 FIXED: was "projectId"
+        "projectGuid": projectId ?? "",
         "contractId": contractId ?? "",
         "userAgent": {
           "description": deviceDescription,
@@ -40,37 +49,157 @@ class ClockApi {
         "activity": {"name": activityName ?? "", "statusFlag": "true"},
       };
 
-      LoggerService.info('ClockIn Request: ${Api.clock}', tag: 'ClockApi');
-      LoggerService.debug('ClockIn Body: ${jsonEncode(body)}', tag: 'ClockApi');
+      if (isOnline) {
+        // ONLINE: Send to API with extended timeout for slow DB
+        LoggerService.info('ClockIn Request: ${Api.clock}', tag: 'ClockApi');
+        LoggerService.debug(
+          'ClockIn Body: ${jsonEncode(body)}',
+          tag: 'ClockApi',
+        );
 
-      final response = await ApiService.post(context, Api.clock, body);
+        // ✨ AUDIT LOG: Clock-in attempt
+        await ClockAuditLogger.logClockIn(
+          clockRefGuid: 'pending',
+          userId: userGuid,
+          isOnline: true,
+          metadata: 'Job: $jobType, Client: ${clientId ?? "none"}',
+        );
 
-      LoggerService.info(
-        'ClockIn Response: ${response.statusCode}',
-        tag: 'ClockApi',
-      );
-      LoggerService.debug(
-        'ClockIn Response Body: ${response.body}',
-        tag: 'ClockApi',
-      );
+        // ⚠️ Use longer timeout (45s) to handle DB restarts/slowness
+        final response = await ApiService.post(
+          context,
+          Api.clock,
+          body,
+          timeout: const Duration(seconds: 45),
+        );
 
-      if (response.statusCode == 201) {
-        final data = jsonDecode(response.body);
-        LoggerService.info('ClockIn Success', tag: 'ClockApi');
+        LoggerService.info(
+          'ClockIn Response: ${response.statusCode}',
+          tag: 'ClockApi',
+        );
+
+        if (response.statusCode == 201) {
+          final data = jsonDecode(response.body);
+          LoggerService.info('ClockIn Success', tag: 'ClockApi');
+
+          final clockLogGuid = data[0]['CLOCK_LOG_GUID'];
+
+          // ✨ AUDIT LOG: Clock-in success
+          await ClockAuditLogger.logClockIn(
+            clockRefGuid: clockLogGuid,
+            userId: userGuid,
+            isOnline: true,
+            metadata: 'SUCCESS - API responded',
+          );
+
+          // Cache clock status
+          await OfflineDatabase.saveClockStatus({
+            'isClockedIn': true,
+            'clockLogGuid': data[0]['CLOCK_LOG_GUID'],
+            'clockTime': data[0]['CLOCK_TIME'],
+            'jobType': jobType,
+            'address': address,
+            'clientId': clientId,
+            'projectId': projectId,
+            'contractId': contractId,
+            'activityName': activityName,
+          });
+
+          return {
+            "success": true,
+            "clockLogGuid": data[0]['CLOCK_LOG_GUID'],
+            "clockTime": data[0]['CLOCK_TIME'],
+          };
+        } else {
+          LoggerService.error(
+            'ClockIn Failed: Status ${response.statusCode}',
+            tag: 'ClockApi',
+          );
+
+          // ✨ Check for multi-device conflict
+          final responseBody = response.body.toLowerCase();
+          if (responseBody.contains('fail to create resource') ||
+              responseBody.contains('resource') ||
+              response.statusCode == 409) {
+            return {
+              "success": false,
+              "multiDeviceConflict": true,
+              "message":
+                  "You have already clocked in on another device. Please refresh the page to see the latest status.",
+            };
+          }
+
+          return {
+            "success": false,
+            "message": "Clock in failed: ${response.body}",
+          };
+        }
+      } else {
+        // OFFLINE: Queue for later sync
+        final randomSuffix = Random().nextInt(9999).toString().padLeft(4, '0');
+        final tempGuid =
+            'temp_${DateTime.now().millisecondsSinceEpoch}_$randomSuffix';
+        // ✅ Generate UTC time to match server format
+        final tempClockTime = DateTime.now().toUtc().toIso8601String();
+
+        // ✨ Add tempGuid to body so SyncService can track it correctly
+        body['_tempGuid'] = tempGuid;
+
+        // ✅ FIX BUG #12: Handle storage full errors
+        // CRITICAL: Prevent silent data loss when phone storage is full
+        try {
+          await PendingSyncService.addPendingAction(
+            actionType: 'clock_in',
+            payload: body,
+          );
+        } catch (storageError) {
+          LoggerService.error(
+            'Failed to queue clock-in action (storage full?): $storageError',
+            tag: 'ClockApi',
+          );
+
+          // Show user-friendly error
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  '⚠️ Storage full! Cannot save clock-in. Please free up space and try again.',
+                ),
+                backgroundColor: Colors.red,
+                duration: Duration(seconds: 10),
+              ),
+            );
+          }
+
+          return {
+            "success": false,
+            "message": "Storage full. Please free up space and try again.",
+          };
+        }
+
+        // Save temporary clock status locally
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': true,
+          'clockLogGuid': tempGuid,
+          'clockTime': tempClockTime,
+          'jobType': jobType,
+          'address': address,
+          'clientId': clientId,
+          'projectId': projectId,
+          'contractId': contractId,
+          'activityName': activityName,
+        });
+
+        LoggerService.info(
+          '📱 ClockIn queued for offline sync',
+          tag: 'ClockApi',
+        );
 
         return {
           "success": true,
-          "clockLogGuid": data[0]['CLOCK_LOG_GUID'],
-          "clockTime": data[0]['CLOCK_TIME'],
-        };
-      } else {
-        LoggerService.error(
-          'ClockIn Failed: Status ${response.statusCode}',
-          tag: 'ClockApi',
-        );
-        return {
-          "success": false,
-          "message": "Clock in failed: ${response.body}",
+          "clockLogGuid": tempGuid,
+          "clockTime": tempClockTime,
+          "offline": true,
         };
       }
     } catch (e, stackTrace) {
@@ -80,6 +209,53 @@ class ClockApi {
         error: e,
         stackTrace: stackTrace,
       );
+
+      // On error, try to queue offline
+      try {
+        final randomSuffix = Random().nextInt(9999).toString().padLeft(4, '0');
+        final tempGuid =
+            'temp_${DateTime.now().millisecondsSinceEpoch}_$randomSuffix';
+        // ✅ Generate UTC time to match server format
+        final tempClockTime = DateTime.now().toUtc().toIso8601String();
+        final clockTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+        await PendingSyncService.addPendingAction(
+          actionType: 'clock_in',
+          payload: {
+            "_tempGuid": tempGuid, // ✨ Store for SyncService tracking
+            "userGuid": userGuid,
+            "clockTime": clockTime,
+            "clockType": 0,
+            "sourceID": 1,
+            "jobType": jobType,
+            "location": {"lat": latitude, "long": longitude, "name": address},
+            "clientId": clientId ?? "",
+            "projectGuid": projectId ?? "",
+            "contractId": contractId ?? "",
+            "userAgent": {
+              "description": deviceDescription,
+              "publicIP": deviceIp,
+              "deviceID": deviceId,
+            },
+            "activity": {"name": activityName ?? "", "statusFlag": "true"},
+          },
+        );
+
+        return {
+          "success": true,
+          "clockLogGuid": tempGuid,
+          "clockTime": tempClockTime,
+          "offline": true,
+          "message": "Saved offline due to error. Will sync when online.",
+        };
+      } catch (queueError) {
+        LoggerService.error(
+          'Failed to queue clock in',
+          tag: 'ClockApi',
+          error: queueError,
+        );
+      }
+
       return {"success": false, "message": "Network error: $e"};
     }
   }
@@ -102,15 +278,16 @@ class ClockApi {
     required String deviceId,
   }) async {
     try {
+      final clockTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final body = {
         "userGuid": userGuid,
-        "clockTime": DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        "clockTime": clockTime,
         "clockType": 1, // 1 = Clock OUT
         "sourceID": 1,
         "jobType": jobType,
         "location": {"lat": latitude, "long": longitude, "name": address},
         "clientId": clientId ?? "",
-        "projectGuid": projectId ?? "", // 👈 FIXED: was "projectId"
+        "projectGuid": projectId ?? "",
         "contractId": contractId ?? "",
         "userAgent": {
           "description": deviceDescription,
@@ -121,36 +298,112 @@ class ClockApi {
         "clockRefGuid": clockRefGuid,
       };
 
-      LoggerService.info('ClockOut Request: ${Api.clock}', tag: 'ClockApi');
-      LoggerService.debug(
-        'ClockOut Body: ${jsonEncode(body)}',
-        tag: 'ClockApi',
+      // ✨ AUDIT LOG: Clock-out attempt
+      await ClockAuditLogger.logClockOut(
+        clockRefGuid: clockRefGuid,
+        userId: userGuid,
+        isOnline: true,
+        reason: 'Job: $jobType',
       );
 
-      final response = await ApiService.post(context, Api.clock, body);
-
-      LoggerService.info(
-        'ClockOut Response: ${response.statusCode}',
-        tag: 'ClockApi',
-      );
-      LoggerService.debug(
-        'ClockOut Response Body: ${response.body}',
-        tag: 'ClockApi',
-      );
-
-      if (response.statusCode == 201) {
-        final data = jsonDecode(response.body);
-        LoggerService.info('ClockOut Success', tag: 'ClockApi');
-
-        return {"success": true, "clockTime": data[0]['CLOCK_TIME']};
-      } else {
-        LoggerService.error(
-          'ClockOut Failed: Status ${response.statusCode}',
+      // ✨ FIX: Always try API first, queue for offline only if it fails
+      // This prevents false offline detection when app resumes from background
+      try {
+        LoggerService.info('ClockOut Request: ${Api.clock}', tag: 'ClockApi');
+        LoggerService.debug(
+          'ClockOut Body: ${jsonEncode(body)}',
           tag: 'ClockApi',
         );
+
+        // ⚠️ Use longer timeout (45s) to handle DB restarts/slowness
+        final response = await ApiService.post(
+          context,
+          Api.clock,
+          body,
+          timeout: const Duration(seconds: 45),
+        );
+
+        LoggerService.info(
+          'ClockOut Response: ${response.statusCode}',
+          tag: 'ClockApi',
+        );
+
+        if (response.statusCode == 201) {
+          final data = jsonDecode(response.body);
+          LoggerService.info('ClockOut Success', tag: 'ClockApi');
+
+          // Update clock status to clocked out
+          await OfflineDatabase.saveClockStatus({
+            'isClockedIn': false,
+            'clockLogGuid': null,
+            'clockTime': data[0]['CLOCK_TIME'],
+            'jobType': null,
+            'address': null,
+            'clientId': null,
+            'projectId': null,
+            'contractId': null,
+            'activityName': null,
+          });
+
+          return {"success": true, "clockTime": data[0]['CLOCK_TIME']};
+        } else {
+          LoggerService.error(
+            'ClockOut Failed: Status ${response.statusCode}',
+            tag: 'ClockApi',
+          );
+
+          // ✨ Check for multi-device conflict
+          final responseBody = response.body.toLowerCase();
+          if (responseBody.contains('fail to create resource') ||
+              responseBody.contains('resource') ||
+              response.statusCode == 409) {
+            return {
+              "success": false,
+              "multiDeviceConflict": true,
+              "message":
+                  "You have already clocked out on another device. Please refresh the page to see the latest status.",
+            };
+          }
+
+          return {
+            "success": false,
+            "message": "Clock out failed: ${response.body}",
+          };
+        }
+      } catch (apiError) {
+        // API call failed - queue for offline sync
+        LoggerService.warning(
+          'ClockOut API failed, queuing for offline sync: $apiError',
+          tag: 'ClockApi',
+        );
+
+        await PendingSyncService.addPendingAction(
+          actionType: 'clock_out',
+          payload: body,
+        );
+
+        // Update local clock status
+        await OfflineDatabase.saveClockStatus({
+          'isClockedIn': false,
+          'clockLogGuid': null,
+          'clockTime': DateTime.now().toUtc().toIso8601String(),
+          'jobType': null,
+          'address': null,
+          'clientId': null,
+          'projectId': null,
+          'contractId': null,
+          'activityName': null,
+        });
+
+        LoggerService.info(
+          '📱 ClockOut queued for offline sync',
+          tag: 'ClockApi',
+        );
+
         return {
-          "success": false,
-          "message": "Clock out failed: ${response.body}",
+          "success": true,
+          "clockTime": DateTime.now().toUtc().toIso8601String(),
+          "offline": true,
         };
       }
     } catch (e, stackTrace) {
@@ -160,6 +413,47 @@ class ClockApi {
         error: e,
         stackTrace: stackTrace,
       );
+
+      // On error, try to queue offline
+      try {
+        final clockTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+        await PendingSyncService.addPendingAction(
+          actionType: 'clock_out',
+          payload: {
+            "userGuid": userGuid,
+            "clockTime": clockTime,
+            "clockType": 1,
+            "sourceID": 1,
+            "jobType": jobType,
+            "location": {"lat": latitude, "long": longitude, "name": address},
+            "clientId": clientId ?? "",
+            "projectGuid": projectId ?? "",
+            "contractId": contractId ?? "",
+            "userAgent": {
+              "description": deviceDescription,
+              "publicIP": deviceIp,
+              "deviceID": deviceId,
+            },
+            "activity": {"name": activityName ?? "", "statusFlag": "true"},
+            "clockRefGuid": clockRefGuid,
+          },
+        );
+
+        return {
+          "success": true,
+          "clockTime": DateTime.now().toUtc().toIso8601String(),
+          "offline": true,
+          "message": "Saved offline due to error. Will sync when online.",
+        };
+      } catch (queueError) {
+        LoggerService.error(
+          'Failed to queue clock out',
+          tag: 'ClockApi',
+          error: queueError,
+        );
+      }
+
       return {"success": false, "message": "Network error: $e"};
     }
   }
@@ -169,61 +463,94 @@ class ClockApi {
     BuildContext context,
   ) async {
     try {
-      LoggerService.info(
-        'GetLatestClock Request: ${Api.clock_beewhere}',
-        tag: 'ClockApi',
-      );
+      // Check if online
+      final isOnline = await ConnectivityService.checkConnectivity();
 
-      final response = await ApiService.get(context, Api.clock_beewhere);
-
-      LoggerService.info(
-        'GetLatestClock Response: ${response.statusCode}',
-        tag: 'ClockApi',
-      );
-      LoggerService.debug(
-        'GetLatestClock Response Body: ${response.body}',
-        tag: 'ClockApi',
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        LoggerService.debug(
-          'Parsed data type: ${data.runtimeType}',
+      if (isOnline) {
+        // ONLINE: Fetch from API
+        LoggerService.info(
+          'GetLatestClock Request: ${Api.clock_beewhere}',
           tag: 'ClockApi',
         );
 
-        if (data.isEmpty) {
-          LoggerService.info('No clock records found', tag: 'ClockApi');
+        final response = await ApiService.get(context, Api.clock_beewhere);
+
+        LoggerService.info(
+          'GetLatestClock Response: ${response.statusCode}',
+          tag: 'ClockApi',
+        );
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+
+          if (data.isEmpty) {
+            LoggerService.info('No clock records found', tag: 'ClockApi');
+
+            // Save empty status
+            await OfflineDatabase.saveClockStatus({
+              'isClockedIn': false,
+              'clockLogGuid': null,
+              'clockTime': null,
+              'jobType': null,
+              'address': null,
+              'clientId': null,
+              'projectId': null,
+              'contractId': null,
+              'activityName': null,
+            });
+
+            return {"success": true, "isClockedIn": false};
+          }
+
+          final latest = data[0];
+          final clockType = latest['CLOCK_TYPE'];
+
+          final result = {
+            "success": true,
+            "isClockedIn": clockType == 0,
+            "clockLogGuid": latest['CLOCK_LOG_GUID'],
+            "clockTime": latest['CLOCK_TIME'],
+            "jobType": latest['JOB_TYPE'],
+            "address": latest['ADDRESS'],
+            "clientId": latest['CLIENT_ID'],
+            "projectId": latest['PROJECT_ID'],
+            "contractId": latest['CONTRACT_ID'],
+            "activityName": "",
+          };
+
+          // Cache the status
+          await OfflineDatabase.saveClockStatus(result);
+
+          LoggerService.debug('Latest clock type: $clockType', tag: 'ClockApi');
+          return result;
+        } else {
+          LoggerService.error(
+            'GetLatestClock Failed: Status ${response.statusCode}',
+            tag: 'ClockApi',
+          );
+          return {"success": false, "message": "Failed to get clock status"};
+        }
+      } else {
+        // OFFLINE: Return cached status
+        LoggerService.info(
+          '📱 Device is offline, loading from cache',
+          tag: 'ClockApi',
+        );
+
+        final cachedStatus = await OfflineDatabase.getClockStatus();
+        if (cachedStatus != null) {
+          LoggerService.info(
+            '📱 Loaded clock status from offline cache: isClockedIn=${cachedStatus['isClockedIn']}',
+            tag: 'ClockApi',
+          );
+          return cachedStatus;
+        } else {
+          LoggerService.warning(
+            '📱 No cached clock status found, returning default (not clocked in)',
+            tag: 'ClockApi',
+          );
           return {"success": true, "isClockedIn": false};
         }
-
-        LoggerService.debug(
-          'Data is list: ${data is List}, length: ${data is List ? data.length : 'N/A'}',
-          tag: 'ClockApi',
-        );
-
-        final latest = data[0];
-        final clockType = latest['CLOCK_TYPE'];
-        LoggerService.debug('Latest clock type: $clockType', tag: 'ClockApi');
-
-        return {
-          "success": true,
-          "isClockedIn": clockType == 0,
-          "clockLogGuid": latest['CLOCK_LOG_GUID'],
-          "clockTime": latest['CLOCK_TIME'],
-          "jobType": latest['JOB_TYPE'],
-          "address": latest['ADDRESS'],
-          "clientId": latest['CLIENT_ID'],
-          "projectId": latest['PROJECT_ID'], // 👈 Not PROJECT_GUID
-          "contractId": latest['CONTRACT_ID'],
-          "activityName": "", // 👈 FIXED: ACTIVITY is XML string, not object
-        };
-      } else {
-        LoggerService.error(
-          'GetLatestClock Failed: Status ${response.statusCode}',
-          tag: 'ClockApi',
-        );
-        return {"success": false, "message": "Failed to get clock status"};
       }
     } catch (e, stackTrace) {
       LoggerService.error(
@@ -232,6 +559,25 @@ class ClockApi {
         error: e,
         stackTrace: stackTrace,
       );
+
+      // On error, try to return cached status
+      try {
+        final cachedStatus = await OfflineDatabase.getClockStatus();
+        if (cachedStatus != null) {
+          LoggerService.info(
+            '⚠️ Using cached clock status due to error',
+            tag: 'ClockApi',
+          );
+          return cachedStatus;
+        }
+      } catch (cacheError) {
+        LoggerService.error(
+          'Failed to get cached clock status',
+          tag: 'ClockApi',
+          error: cacheError,
+        );
+      }
+
       return {"success": false, "message": "Network error: $e"};
     }
   }

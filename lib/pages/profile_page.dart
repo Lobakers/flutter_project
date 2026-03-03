@@ -1,6 +1,10 @@
+import 'dart:async';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:beewhere/pages/login_page.dart';
 import 'package:beewhere/pages/log_viewer_page.dart';
+import 'package:beewhere/pages/web_view_page.dart';
 import 'package:beewhere/services/notification_service.dart';
+import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/theme/color_theme.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
@@ -20,10 +24,34 @@ class _ProfilePageState extends State<ProfilePage> {
   String _appVersion = 'Loading...';
   String _buildNumber = '';
 
+  // Connectivity state
+  bool _isOnline = true;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+
   @override
   void initState() {
     super.initState();
     _loadAppInfo();
+    _initConnectivityListener();
+  }
+
+  void _initConnectivityListener() {
+    _isOnline = ConnectivityService.isOnline;
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      ConnectivityResult result,
+    ) {
+      if (mounted) {
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadAppInfo() async {
@@ -113,7 +141,7 @@ class _ProfilePageState extends State<ProfilePage> {
         },
       ),
       appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(300),
+        preferredSize: const Size.fromHeight(180),
         child: Container(
           decoration: const BoxDecoration(
             image: DecorationImage(
@@ -128,6 +156,44 @@ class _ProfilePageState extends State<ProfilePage> {
                 foregroundColor: Colors.white,
                 elevation: 0,
                 title: const Text('Profile'),
+                actions: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _isOnline
+                          ? Colors.green.withOpacity(0.2)
+                          : Colors.red.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _isOnline ? Colors.green : Colors.red,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _isOnline ? Icons.wifi : Icons.wifi_off,
+                          color: _isOnline ? Colors.green : Colors.red,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _isOnline ? 'Online' : 'Offline',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _isOnline ? Colors.green : Colors.red,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                ],
               ),
               Container(
                 width: double.infinity,
@@ -136,28 +202,28 @@ class _ProfilePageState extends State<ProfilePage> {
                   children: [
                     Container(
                       padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.2),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: const CircleAvatar(
-                        radius: 50,
-                        backgroundColor: Colors.white,
-                        child: Icon(
-                          Icons.person,
-                          size: 60,
-                          color: BeeColor.buttonColor,
-                        ),
-                      ),
+                      // decoration: BoxDecoration(
+                      //   color: Colors.white,
+                      //   shape: BoxShape.circle,
+                      //   boxShadow: [
+                      //     BoxShadow(
+                      //       color: Colors.black.withOpacity(0.2),
+                      //       blurRadius: 8,
+                      //       offset: const Offset(0, 2),
+                      //     ),
+                      //   ],
+                      // ),
+                      // child: const CircleAvatar(
+                      //   radius: 50,
+                      //   backgroundColor: Colors.white,
+                      //   child: Icon(
+                      //     Icons.person,
+                      //     size: 60,
+                      //     color: BeeColor.buttonColor,
+                      //   ),
+                      // ),
                     ),
-                    const SizedBox(height: 20),
+                    // const SizedBox(height: 20),
                     Text(
                       email,
                       style: const TextStyle(
@@ -189,9 +255,12 @@ class _ProfilePageState extends State<ProfilePage> {
         child: Column(
           children: [
             const SizedBox(height: 20),
-            _buildInfoSection(userId),
-            const SizedBox(height: 20),
-            _buildSettingsSection(),
+            // ✨ Only show info and settings sections for irfan@zen.com.my
+            if (email == 'irfan@zen.com.my') ...[
+              _buildInfoSection(userId),
+              const SizedBox(height: 20),
+              _buildSettingsSection(),
+            ],
             const SizedBox(height: 20),
             _buildAboutSection(),
             const SizedBox(height: 30),
@@ -359,10 +428,33 @@ class _ProfilePageState extends State<ProfilePage> {
             icon: Icons.privacy_tip,
             title: 'Privacy Policy',
             subtitle: 'View our privacy policy',
-            onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Privacy policy coming soon')),
-              );
+            onTap: () async {
+              final connectivityResult = await Connectivity()
+                  .checkConnectivity();
+              if (connectivityResult == ConnectivityResult.none) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'No internet connection. Cannot open Privacy Policy.',
+                      ),
+                    ),
+                  );
+                }
+                return;
+              }
+              if (context.mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const WebViewPage(
+                      url:
+                          'https://beesuite-docs.readthedocs.io/privacy_policy.html',
+                      title: 'Privacy Policy',
+                    ),
+                  ),
+                );
+              }
             },
           ),
           const Divider(height: 1, indent: 60),
@@ -370,10 +462,33 @@ class _ProfilePageState extends State<ProfilePage> {
             icon: Icons.description,
             title: 'Terms of Service',
             subtitle: 'View terms and conditions',
-            onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Terms of service coming soon')),
-              );
+            onTap: () async {
+              final connectivityResult = await Connectivity()
+                  .checkConnectivity();
+              if (connectivityResult == ConnectivityResult.none) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'No internet connection. Cannot open Terms of Service.',
+                      ),
+                    ),
+                  );
+                }
+                return;
+              }
+              if (context.mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const WebViewPage(
+                      url:
+                          'https://beesuite-docs.readthedocs.io/terms_and_conditions.html',
+                      title: 'Terms of Service',
+                    ),
+                  ),
+                );
+              }
             },
           ),
         ],

@@ -15,6 +15,8 @@ class LoginPage extends StatefulWidget {
 
 class _LoginPageState extends State<LoginPage> {
   bool _obscurePassword = true;
+  String? _emailError;
+  String? _passwordError;
 
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
@@ -29,7 +31,11 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       extendBodyBehindAppBar: true,
-      appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        automaticallyImplyLeading: false, // Disable back button
+      ),
       body: Container(
         decoration: const BoxDecoration(
           image: DecorationImage(
@@ -66,18 +72,41 @@ class _LoginPageState extends State<LoginPage> {
                       hintText: 'Email',
                       hintStyle: const TextStyle(color: Colors.white),
                       prefixIcon: const Icon(Icons.email, color: Colors.white),
+                      errorText: _emailError,
+                      errorStyle: const TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 12,
+                      ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: Colors.white,
+                        borderSide: BorderSide(
+                          color: _emailError != null
+                              ? Colors.redAccent
+                              : Colors.white,
                           width: 1.5,
                         ),
                       ),
                       focusedBorder: OutlineInputBorder(
                         // 👈 when focused (clicked)
                         borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(
+                          color: _emailError != null
+                              ? Colors.redAccent
+                              : Colors.white,
+                          width: 2.0,
+                        ),
+                      ),
+                      errorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
                         borderSide: const BorderSide(
-                          color: Colors.white,
+                          color: Colors.redAccent,
+                          width: 1.5,
+                        ),
+                      ),
+                      focusedErrorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: Colors.redAccent,
                           width: 2.0,
                         ),
                       ),
@@ -95,6 +124,11 @@ class _LoginPageState extends State<LoginPage> {
                       hintText: 'Password',
                       hintStyle: const TextStyle(color: Colors.white),
                       prefixIcon: const Icon(Icons.lock, color: Colors.white),
+                      errorText: _passwordError,
+                      errorStyle: const TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 12,
+                      ),
                       suffixIcon: IconButton(
                         icon: Icon(
                           _obscurePassword
@@ -110,15 +144,33 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: Colors.white,
+                        borderSide: BorderSide(
+                          color: _passwordError != null
+                              ? Colors.redAccent
+                              : Colors.white,
                           width: 1.5,
                         ),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(
+                          color: _passwordError != null
+                              ? Colors.redAccent
+                              : Colors.white,
+                          width: 2.0,
+                        ),
+                      ),
+                      errorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
                         borderSide: const BorderSide(
-                          color: Colors.white,
+                          color: Colors.redAccent,
+                          width: 1.5,
+                        ),
+                      ),
+                      focusedErrorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: Colors.redAccent,
                           width: 2.0,
                         ),
                       ),
@@ -128,17 +180,34 @@ class _LoginPageState extends State<LoginPage> {
                   SizedBox(
                     child: ElevatedButton(
                       onPressed: () async {
-                        String email = _emailController.text;
-                        String password = _passwordController.text;
+                        String email = _emailController.text.trim();
+                        String password = _passwordController.text.trim();
 
-                        if (email.isEmpty || password.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please enter email and password'),
-                            ),
-                          );
+                        // Clear previous errors
+                        setState(() {
+                          _emailError = null;
+                          _passwordError = null;
+                        });
+
+                        // Validate fields
+                        bool hasError = false;
+                        if (email.isEmpty) {
+                          setState(() {
+                            _emailError = 'Please enter your email';
+                          });
+                          hasError = true;
+                        }
+                        if (password.isEmpty) {
+                          setState(() {
+                            _passwordError = 'Please enter your password';
+                          });
+                          hasError = true;
+                        }
+
+                        if (hasError) {
                           return;
                         }
+
                         // show a loading indicator
                         showDialog(
                           context: context,

@@ -1,0 +1,204 @@
+import 'dart:async'; // ✨ ADDED FOR STREAM CONTROLLER
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
+
+/// Service to manage offline actions queue
+/// Handles write operations performed while offline
+class PendingSyncService {
+  static Database? _database;
+  static bool _isInitialized = false;
+
+  // ✨ Stream for triggering UI updates on pending sync changes
+  static final StreamController<void> _onChangeController =
+      StreamController<void>.broadcast();
+  static Stream<void> get onChange => _onChangeController.stream;
+
+  /// Initialize the pending sync database
+  static Future<void> init() async {
+    if (_isInitialized) return;
+
+    try {
+      final Directory appDocDir = await getApplicationDocumentsDirectory();
+      final String dbPath = join(appDocDir.path, 'beewhere_pending_sync.db');
+
+      _database = await openDatabase(
+        dbPath,
+        version: 1,
+        singleInstance: false, // ✨ Prevent cross-isolate closure
+        onCreate: (Database db, int version) async {
+          await db.execute('''
+            CREATE TABLE pending_sync (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              action_type TEXT NOT NULL,
+              payload TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              retry_count INTEGER DEFAULT 0,
+              last_error TEXT,
+              last_retry_at TEXT
+            )
+          ''');
+
+          // Create index for faster queries
+          await db.execute(
+            'CREATE INDEX idx_created_at ON pending_sync(created_at ASC)',
+          );
+        },
+      );
+
+      _isInitialized = true;
+      debugPrint('✅ PendingSyncService initialized');
+    } catch (e) {
+      debugPrint('❌ Failed to initialize pending sync database: $e');
+    }
+  }
+
+  /// ✨ Auto-healing database getter
+  static Future<Database> _getDb() async {
+    if (_database == null || !_database!.isOpen) {
+      _isInitialized = false;
+      await init();
+    }
+    return _database!;
+  }
+
+  /// Add a pending action to the queue
+  static Future<void> addPendingAction({
+    required String actionType,
+    required Map<String, dynamic> payload,
+  }) async {
+    final db = await _getDb();
+
+    try {
+      await db.insert('pending_sync', {
+        'action_type': actionType,
+        'payload': jsonEncode(payload),
+        'created_at': DateTime.now().toIso8601String(),
+        'retry_count': 0,
+      });
+
+      _onChangeController.add(null); // ✨ NOTIFY LISTENERS
+      debugPrint('✅ Added pending action: $actionType');
+    } catch (e) {
+      debugPrint('❌ Failed to add pending action: $e');
+    }
+  }
+
+  /// Get all pending actions
+  static Future<List<Map<String, dynamic>>> getPendingActions() async {
+    final db = await _getDb();
+
+    try {
+      // ✨ FIX: Sort by Auto-Increment ID to guarantee absolute insertion order.
+      // Sorting by created_at string can sometimes mix up rapidly inserted actions
+      // (like clicking clock in then clock out in the same second), causing
+      // the server to receive clock out before clock in.
+      final results = await db.query('pending_sync', orderBy: 'id ASC');
+
+      return results.map((row) {
+        return {
+          'id': row['id'],
+          'action_type': row['action_type'],
+          'payload': jsonDecode(row['payload'] as String),
+          'created_at': row['created_at'],
+          'retry_count': row['retry_count'],
+          'last_error': row['last_error'],
+        };
+      }).toList();
+    } catch (e) {
+      debugPrint('❌ Failed to get pending actions: $e');
+      return [];
+    }
+  }
+
+  /// Get count of pending actions
+  static Future<int> getPendingCount() async {
+    final db = await _getDb();
+
+    try {
+      final result = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM pending_sync',
+      );
+      return Sqflite.firstIntValue(result) ?? 0;
+    } catch (e) {
+      debugPrint('❌ Failed to get pending count: $e');
+      return 0;
+    }
+  }
+
+  /// Remove a pending action after successful sync
+  static Future<void> removePendingAction(int id) async {
+    final db = await _getDb();
+
+    try {
+      await db.delete('pending_sync', where: 'id = ?', whereArgs: [id]);
+
+      _onChangeController.add(null); // ✨ NOTIFY LISTENERS
+      debugPrint('✅ Removed pending action: $id');
+    } catch (e) {
+      debugPrint('❌ Failed to remove pending action: $e');
+    }
+  }
+
+  /// Increment retry count for a failed sync
+  static Future<void> incrementRetry(int id, String error) async {
+    final db = await _getDb();
+
+    try {
+      final now = DateTime.now().toIso8601String();
+      await db.rawUpdate(
+        'UPDATE pending_sync SET retry_count = retry_count + 1, last_error = ?, last_retry_at = ? WHERE id = ?',
+        [error, now, id],
+      );
+
+      debugPrint('⚠️ Incremented retry count for action: $id at $now');
+    } catch (e) {
+      debugPrint('❌ Failed to increment retry: $e');
+    }
+  }
+
+  /// Update a pending action's payload
+  static Future<void> updatePendingAction({
+    required int actionId,
+    required Map<String, dynamic> payload,
+  }) async {
+    final db = await _getDb();
+
+    try {
+      await db.update(
+        'pending_sync',
+        {'payload': jsonEncode(payload)},
+        where: 'id = ?',
+        whereArgs: [actionId],
+      );
+
+      debugPrint('✅ Updated pending action $actionId');
+    } catch (e) {
+      debugPrint('❌ Failed to update pending action: $e');
+    }
+  }
+
+  /// Clear all pending actions (use with caution)
+  static Future<void> clearAll() async {
+    final db = await _getDb();
+
+    try {
+      await db.delete('pending_sync');
+      _onChangeController.add(null); // ✨ NOTIFY LISTENERS
+      debugPrint('✅ Cleared all pending actions');
+    } catch (e) {
+      debugPrint('❌ Failed to clear pending actions: $e');
+    }
+  }
+
+  /// Close database connection
+  static Future<void> dispose() async {
+    await _database?.close();
+    _database = null;
+    _isInitialized = false;
+    _onChangeController.close();
+  }
+}
