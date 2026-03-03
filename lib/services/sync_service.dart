@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/services/pending_sync_service.dart';
 import 'package:beewhere/services/storage_service.dart';
 import 'package:beewhere/services/logger_service.dart';
+import 'package:beewhere/services/clock_audit_logger.dart'; // ✨ For audit logging
 import 'package:beewhere/services/offline_database.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart'; // For basename function
@@ -14,6 +16,7 @@ class SyncService {
   static bool _isSyncing = false;
   static int _syncedCount = 0;
   static int _failedCount = 0;
+  static Timer? _periodicSyncTimer; // ✨ NEW: Periodic sync timer
   // Production API (currently active)
   static const String _baseUrl = 'https://amscore.beesuite.app';
 
@@ -31,21 +34,95 @@ class SyncService {
 
   /// Initialize sync service - register with connectivity service
   static void init() {
-    ConnectivityService.registerSyncCallback(() {
+    ConnectivityService.registerSyncCallback(() async {
+      // ✨ AUDIT LOG: Sync triggered by connectivity change
+      await ClockAuditLogger.logSyncAttempt(
+        trigger: 'connectivity_restored',
+        pendingCount: await PendingSyncService.getPendingCount(),
+      );
       syncPendingActions(); // Auto-sync when connection restored
     });
+
+    // ✨ NEW: Start periodic sync check (every 2 minutes if there are pending actions)
+    _startPeriodicSync();
+
     LoggerService.info('✅ SyncService initialized', tag: 'SyncService');
+
+    // ✨ AUDIT LOG: Service initialized
+    ClockAuditLogger.logServiceStart(
+      serviceType: 'SyncService',
+      targetLocation:
+          'Periodic sync: 30s interval, Connectivity monitoring active',
+    );
+  }
+
+  /// ✨ Start periodic sync timer
+  static void _startPeriodicSync() {
+    _periodicSyncTimer?.cancel(); // Cancel existing timer
+
+    // ✨ FIX: Reduced from 2 minutes to 30 seconds for faster sync
+    _periodicSyncTimer = Timer.periodic(const Duration(seconds: 30), (
+      timer,
+    ) async {
+      try {
+        // Only sync if online and have pending actions
+        if (!ConnectivityService.isOnline) return;
+
+        final pendingCount = await PendingSyncService.getPendingCount();
+        if (pendingCount > 0) {
+          LoggerService.info(
+            '⏰ Periodic sync check: $pendingCount pending actions',
+            tag: 'SyncService',
+          );
+          // ✨ AUDIT LOG: Periodic sync trigger
+          await ClockAuditLogger.logSyncAttempt(
+            trigger: 'periodic_timer_30s',
+            pendingCount: pendingCount,
+          );
+          await syncPendingActions();
+        }
+      } catch (e) {
+        LoggerService.error(
+          'Error in periodic sync',
+          tag: 'SyncService',
+          error: e,
+        );
+        // ✨ AUDIT LOG: Periodic sync error
+        await ClockAuditLogger.logError(
+          operation: 'Periodic sync timer',
+          error: e.toString(),
+        );
+      }
+    });
+  }
+
+  /// Dispose sync service
+  static void dispose() {
+    _periodicSyncTimer?.cancel();
+    _periodicSyncTimer = null;
   }
 
   /// Sync all pending actions (works without context)
   static Future<Map<String, dynamic>> syncPendingActions() async {
     if (_isSyncing) {
       LoggerService.info('⚠️ Sync already in progress', tag: 'SyncService');
+      // ✨ AUDIT LOG: Sync blocked - already syncing
+      await ClockAuditLogger.logSyncBlocked(
+        reason: 'sync_already_in_progress',
+        details: 'Another sync operation is currently running',
+      );
       return {'success': false, 'message': 'Sync already in progress'};
     }
 
     if (!ConnectivityService.isOnline) {
       LoggerService.info('⚠️ Cannot sync: offline', tag: 'SyncService');
+      // ✨ AUDIT LOG: Sync blocked - offline
+      final pendingCount = await PendingSyncService.getPendingCount();
+      await ClockAuditLogger.logSyncBlocked(
+        reason: 'device_offline',
+        details:
+            'Device has no internet connection. $pendingCount actions queued.',
+      );
       return {'success': false, 'message': 'No internet connection'};
     }
 
@@ -60,6 +137,11 @@ class SyncService {
       final token = await StorageService.getToken();
       if (token == null) {
         LoggerService.error('No auth token found', tag: 'SyncService');
+        // ✨ AUDIT LOG: Sync blocked - no auth
+        await ClockAuditLogger.logSyncBlocked(
+          reason: 'no_auth_token',
+          details: 'User not authenticated. Cannot sync pending actions.',
+        );
         _isSyncing = false;
         return {'success': false, 'message': 'No auth token'};
       }
@@ -70,8 +152,17 @@ class SyncService {
         tag: 'SyncService',
       );
 
+      // ✨ AUDIT LOG: Sync started
+      await ClockAuditLogger.logSyncStart(
+        pendingCount: pendingActions.length,
+        details:
+            'Processing offline queue: ${pendingActions.map((a) => a['action_type']).join(', ')}',
+      );
+
       if (pendingActions.isEmpty) {
         _isSyncing = false;
+        // ✨ AUDIT LOG: No actions to sync
+        await ClockAuditLogger.logSyncComplete(syncedCount: 0, failedCount: 0);
         return {'success': true, 'message': 'No pending actions to sync'};
       }
 
@@ -81,6 +172,31 @@ class SyncService {
       // Process each pending action
       for (var action in pendingActions) {
         final actionId = action['id'];
+        final retryCount = action['retry_count'] as int? ?? 0;
+
+        // ✨ NEW: Max retry limit - remove stuck actions after 20 retries
+        if (retryCount >= 20) {
+          LoggerService.warning(
+            '⚠️ Action $actionId (${action['action_type']}) has exceeded max retries ($retryCount). Removing from queue to prevent permanent blockage.',
+            tag: 'SyncService',
+          );
+
+          // ✨ Audit log for cleanup
+          try {
+            await ClockAuditLogger.logError(
+              operation: 'Sync cleanup - max retries',
+              error:
+                  'Action ${action['action_type']} removed after $retryCount failed attempts. Last error: ${action['last_error']}',
+            );
+          } catch (e) {
+            // Ignore audit log errors
+          }
+
+          await PendingSyncService.removePendingAction(actionId);
+          _failedCount++;
+          // Continue to next action instead of breaking
+          continue;
+        }
 
         // ✨ NEW: Exponential Backoff Check
         if (!_shouldRetry(action)) {
@@ -248,7 +364,14 @@ class SyncService {
             await PendingSyncService.removePendingAction(actionId);
             _syncedCount++;
             LoggerService.info('✅ Synced action $actionId', tag: 'SyncService');
-            
+
+            // ✨ AUDIT LOG: Action synced successfully
+            await ClockAuditLogger.logActionSynced(
+              actionType: actionType,
+              actionId: actionId,
+              retryCount: retryCount,
+            );
+
             // ✨ FIX: Add a 1-second delay after EVERY successful action
             // This prevents the server from receiving multiple requests in the exact same second
             // and getting sorted incorrectly due to identical timestamps or parallel processing
@@ -261,6 +384,15 @@ class SyncService {
               '❌ Failed to sync action $actionId. Aborting sync loop to preserve strict chronological order.',
               tag: 'SyncService',
             );
+
+            // ✨ AUDIT LOG: Action sync failed
+            await ClockAuditLogger.logActionSyncFailed(
+              actionType: actionType,
+              actionId: actionId,
+              retryCount: retryCount + 1,
+              reason: 'API returned failure',
+            );
+
             // ✨ CRITICAL FIX: Break the loop on failure.
             // We MUST NOT sync subsequent actions if a previous one fails,
             // otherwise we could send a clock-out before its clock-in.
@@ -274,6 +406,15 @@ class SyncService {
             tag: 'SyncService',
             error: e,
           );
+
+          // ✨ AUDIT LOG: Action sync exception
+          await ClockAuditLogger.logActionSyncFailed(
+            actionType: actionType,
+            actionId: actionId,
+            retryCount: retryCount + 1,
+            reason: 'Exception: ${e.toString()}',
+          );
+
           // ✨ CRITICAL FIX: Break the loop on exception.
           break;
         }
@@ -286,10 +427,23 @@ class SyncService {
         tag: 'SyncService',
       );
 
+      // ✨ AUDIT LOG: Sync completed
+      await ClockAuditLogger.logSyncComplete(
+        syncedCount: _syncedCount,
+        failedCount: _failedCount,
+      );
+
       return {'success': true, 'synced': _syncedCount, 'failed': _failedCount};
     } catch (e) {
       _isSyncing = false;
       LoggerService.error('Sync error', tag: 'SyncService', error: e);
+
+      // ✨ AUDIT LOG: Sync exception
+      await ClockAuditLogger.logError(
+        operation: 'Sync operation',
+        error: 'Critical sync error: $e',
+      );
+
       return {'success': false, 'message': 'Sync error: $e'};
     }
   }
@@ -363,6 +517,22 @@ class SyncService {
         // TODO: Notify user to re-login
         return {'success': false, 'tokenExpired': true};
       } else {
+        final responseBody = response.body.toLowerCase();
+
+        // ✨ Check for duplicate clock-in (already clocked in)
+        // This can happen if user clocked in on another device after queueing this offline clock-in
+        if ((response.statusCode == 400 || response.statusCode == 409) &&
+            (responseBody.contains('already clocked in') ||
+                responseBody.contains('duplicate') ||
+                responseBody.contains('conflict'))) {
+          LoggerService.warning(
+            '⚠️ Duplicate clock-in detected (user already clocked in). Removing from queue. Error: ${response.body}',
+            tag: 'SyncService',
+          );
+          // Return success=true to remove it from queue (it's a duplicate that can't be synced)
+          return {'success': true, 'duplicate': true};
+        }
+
         LoggerService.error(
           'Clock in sync failed: ${response.statusCode} - ${response.body}',
           tag: 'SyncService',
@@ -439,11 +609,26 @@ class SyncService {
       } else {
         // ✨ Check if this is an orphaned clock-out (referencing non-existent GUID)
         final responseBody = response.body.toLowerCase();
-        if (response.statusCode == 400 &&
+
+        // Expanded orphan detection - catch multiple error scenarios:
+        // - "fail to create resource" (original clock-in doesn't exist)
+        // - "resource" (generic resource error)
+        // - "already clocked out" (duplicate clock-out)
+        // - "invalid guid" (GUID doesn't exist)
+        // - "not found" (clock-in record not found)
+        // - Status 404 (not found)
+        // - Status 409 (conflict - already processed)
+        if ((response.statusCode == 400 ||
+                response.statusCode == 404 ||
+                response.statusCode == 409) &&
             (responseBody.contains('fail to create resource') ||
-                responseBody.contains('resource'))) {
+                responseBody.contains('resource') ||
+                responseBody.contains('already clocked out') ||
+                responseBody.contains('invalid guid') ||
+                responseBody.contains('not found') ||
+                responseBody.contains('conflict'))) {
           LoggerService.warning(
-            '⚠️ Clock-out references non-existent GUID (orphaned record). This will be removed from queue.',
+            '⚠️ Clock-out references non-existent or already processed GUID (orphaned record). Removing from queue. Error: ${response.body}',
             tag: 'SyncService',
           );
           // Return true to remove it from queue (it's an orphaned record that can't be synced)

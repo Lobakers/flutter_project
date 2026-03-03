@@ -9,7 +9,18 @@ import 'package:geolocator/geolocator.dart';
 /// Callback when user leaves the geofence area
 typedef OnLeaveGeofence = Future<void> Function(double distance);
 
+/// ✨ SINGLETON: Global instance of AutoClockOutService
+/// Survives page navigation to maintain violation counter and monitoring state
 class AutoClockOutService {
+  // ✨ Singleton instance
+  static final AutoClockOutService _instance = AutoClockOutService._internal();
+
+  /// Get the singleton instance
+  static AutoClockOutService get instance => _instance;
+
+  /// Private constructor for singleton
+  AutoClockOutService._internal();
+
   Timer? _checkTimer; // ✨ Changed from position stream to timer
   final StreamController<Map<String, dynamic>> _statusController =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -38,8 +49,8 @@ class AutoClockOutService {
   String? _targetAddress;
 
   // Settings
-  final Duration checkInterval;
-  double radiusInMeters; // ✨ Made non-final to allow dynamic updates
+  Duration checkInterval = GeofenceConfig.autoClockOutCheckInterval;
+  double radiusInMeters = GeofenceConfig.autoClockOutRadius;
 
   // Callback when user exits geofence
   OnLeaveGeofence? onLeaveGeofence;
@@ -54,12 +65,6 @@ class AutoClockOutService {
   // ✨ Minimum time before auto clock-out can trigger (prevents immediate trigger)
   DateTime? _monitoringStartTime;
   static const Duration _minimumClockInDuration = Duration(seconds: 30);
-
-  AutoClockOutService({
-    this.checkInterval = GeofenceConfig.autoClockOutCheckInterval,
-    this.radiusInMeters = GeofenceConfig.autoClockOutRadius,
-    this.onLeaveGeofence,
-  });
 
   bool get isMonitoring => _isMonitoring;
   double? get targetLat => _targetLat;

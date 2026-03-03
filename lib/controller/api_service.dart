@@ -26,7 +26,7 @@ class ApiService {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Session expired. Please login again.'),
-            backgroundColor: Colors.orange,
+            backgroundColor: Color(0xFFD32F2F),
             duration: Duration(seconds: 3),
           ),
         );

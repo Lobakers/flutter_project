@@ -63,8 +63,10 @@ class BackgroundGeofenceService {
         channelId: 'location_tracking_channel',
         channelName: 'Location Tracking',
         channelDescription: 'Monitoring your location for auto clock out',
-        channelImportance: NotificationChannelImportance.LOW,
-        priority: NotificationPriority.LOW,
+        channelImportance:
+            NotificationChannelImportance.DEFAULT, // ✅ Increased from LOW
+        priority: NotificationPriority
+            .DEFAULT, // ✅ Increased from LOW (makes it harder to kill)
       ),
       iosNotificationOptions: const IOSNotificationOptions(
         showNotification: true,
@@ -427,13 +429,41 @@ class GeofenceTaskHandler extends TaskHandler {
         // Continue anyway - don't let database errors block auto clock-out
       }
 
-      // Get clock state
+      // Get clock state from Secure Storage (primary source)
       final state = await StorageService.getClockInState();
-      final clockRefGuid = state?['clockRefGuid'] as String?;
+      String? clockRefGuid = state?['clockRefGuid'] as String?;
 
+      // ✅ FALLBACK: If Secure Storage corrupted, try SQLite as backup
+      if (clockRefGuid == null) {
+        LoggerService.warning(
+          'clockRefGuid not found in Secure Storage, checking SQLite backup...',
+          tag: 'GeofenceTaskHandler',
+        );
+
+        try {
+          final cachedClock = await OfflineDatabase.getClockStatus();
+          if (cachedClock != null && cachedClock['isClockedIn'] == true) {
+            clockRefGuid = cachedClock['clockLogGuid'] as String?;
+            if (clockRefGuid != null) {
+              LoggerService.info(
+                '✅ Recovered clockRefGuid from SQLite backup: $clockRefGuid',
+                tag: 'GeofenceTaskHandler',
+              );
+            }
+          }
+        } catch (e) {
+          LoggerService.error(
+            'Failed to read SQLite backup',
+            tag: 'GeofenceTaskHandler',
+            error: e,
+          );
+        }
+      }
+
+      // If still null after checking both sources, give up
       if (clockRefGuid == null) {
         LoggerService.error(
-          'No clockRefGuid found, user may have already clocked out',
+          'No clockRefGuid found in both Secure Storage and SQLite, user may have already clocked out',
           tag: 'GeofenceTaskHandler',
         );
         // Stop tracking since there's no active clock-in

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math'; // ✨ NEW
 import 'package:beewhere/controller/api_service.dart';
 import 'package:beewhere/services/logger_service.dart';
+import 'package:beewhere/services/clock_audit_logger.dart';
 import 'package:beewhere/services/connectivity_service.dart';
 import 'package:beewhere/services/pending_sync_service.dart';
 import 'package:beewhere/services/offline_database.dart';
@@ -56,6 +57,14 @@ class ClockApi {
           tag: 'ClockApi',
         );
 
+        // ✨ AUDIT LOG: Clock-in attempt
+        await ClockAuditLogger.logClockIn(
+          clockRefGuid: 'pending',
+          userId: userGuid,
+          isOnline: true,
+          metadata: 'Job: $jobType, Client: ${clientId ?? "none"}',
+        );
+
         // ⚠️ Use longer timeout (45s) to handle DB restarts/slowness
         final response = await ApiService.post(
           context,
@@ -72,6 +81,16 @@ class ClockApi {
         if (response.statusCode == 201) {
           final data = jsonDecode(response.body);
           LoggerService.info('ClockIn Success', tag: 'ClockApi');
+
+          final clockLogGuid = data[0]['CLOCK_LOG_GUID'];
+
+          // ✨ AUDIT LOG: Clock-in success
+          await ClockAuditLogger.logClockIn(
+            clockRefGuid: clockLogGuid,
+            userId: userGuid,
+            isOnline: true,
+            metadata: 'SUCCESS - API responded',
+          );
 
           // Cache clock status
           await OfflineDatabase.saveClockStatus({
@@ -120,7 +139,8 @@ class ClockApi {
         final randomSuffix = Random().nextInt(9999).toString().padLeft(4, '0');
         final tempGuid =
             'temp_${DateTime.now().millisecondsSinceEpoch}_$randomSuffix';
-        final tempClockTime = DateTime.now().toIso8601String();
+        // ✅ Generate UTC time to match server format
+        final tempClockTime = DateTime.now().toUtc().toIso8601String();
 
         // ✨ Add tempGuid to body so SyncService can track it correctly
         body['_tempGuid'] = tempGuid;
@@ -195,7 +215,8 @@ class ClockApi {
         final randomSuffix = Random().nextInt(9999).toString().padLeft(4, '0');
         final tempGuid =
             'temp_${DateTime.now().millisecondsSinceEpoch}_$randomSuffix';
-        final tempClockTime = DateTime.now().toIso8601String();
+        // ✅ Generate UTC time to match server format
+        final tempClockTime = DateTime.now().toUtc().toIso8601String();
         final clockTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
 
         await PendingSyncService.addPendingAction(
@@ -277,6 +298,14 @@ class ClockApi {
         "clockRefGuid": clockRefGuid,
       };
 
+      // ✨ AUDIT LOG: Clock-out attempt
+      await ClockAuditLogger.logClockOut(
+        clockRefGuid: clockRefGuid,
+        userId: userGuid,
+        isOnline: true,
+        reason: 'Job: $jobType',
+      );
+
       // ✨ FIX: Always try API first, queue for offline only if it fails
       // This prevents false offline detection when app resumes from background
       try {
@@ -357,7 +386,7 @@ class ClockApi {
         await OfflineDatabase.saveClockStatus({
           'isClockedIn': false,
           'clockLogGuid': null,
-          'clockTime': DateTime.now().toIso8601String(),
+          'clockTime': DateTime.now().toUtc().toIso8601String(),
           'jobType': null,
           'address': null,
           'clientId': null,
@@ -373,7 +402,7 @@ class ClockApi {
 
         return {
           "success": true,
-          "clockTime": DateTime.now().toIso8601String(),
+          "clockTime": DateTime.now().toUtc().toIso8601String(),
           "offline": true,
         };
       }
@@ -413,7 +442,7 @@ class ClockApi {
 
         return {
           "success": true,
-          "clockTime": DateTime.now().toIso8601String(),
+          "clockTime": DateTime.now().toUtc().toIso8601String(),
           "offline": true,
           "message": "Saved offline due to error. Will sync when online.",
         };

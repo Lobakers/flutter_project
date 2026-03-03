@@ -4,9 +4,11 @@ import 'package:beewhere/pages/login_page.dart';
 import 'package:beewhere/pages/profile_page.dart';
 import 'package:beewhere/pages/report_page.dart';
 import 'package:beewhere/pages/support_page.dart';
+import 'package:beewhere/pages/audit_logs_page.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/services/logger_service.dart';
+import 'package:beewhere/services/clock_audit_logger.dart';
 import 'package:beewhere/services/offline_database.dart';
 import 'package:beewhere/services/pending_sync_service.dart';
 import 'package:beewhere/services/connectivity_service.dart';
@@ -20,6 +22,9 @@ void main() async {
 
   // Initialize logger service
   await LoggerService.init();
+
+  // ✨ Initialize clock audit logger for production debugging
+  await ClockAuditLogger.init();
 
   // Initialize offline services
   await OfflineDatabase.init();
@@ -57,6 +62,7 @@ class MyApp extends StatelessWidget {
         '/profile': (context) => const ProfilePage(),
         '/report': (context) => const ReportPage(),
         '/support': (context) => const SupportPage(),
+        '/audit-logs': (context) => const AuditLogsPage(),
       },
     );
   }

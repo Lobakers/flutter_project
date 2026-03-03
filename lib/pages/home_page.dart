@@ -12,8 +12,10 @@ import 'package:beewhere/services/storage_service.dart'; // ✅ Import for watch
 import 'package:beewhere/services/background_geofence_service.dart';
 import 'package:beewhere/services/notification_service.dart';
 import 'package:beewhere/services/logger_service.dart'; // ✨ For on-device debug logs
+import 'package:beewhere/services/clock_audit_logger.dart'; // ✨ For production debugging
 import 'package:beewhere/services/location_permission_service.dart';
 import 'package:beewhere/services/pending_sync_service.dart'; // ✨ NEW
+import 'package:beewhere/services/sync_service.dart'; // ✨ For auto-sync
 import 'package:beewhere/providers/auth_provider.dart';
 import 'package:beewhere/providers/attendance_provider.dart';
 import 'package:beewhere/widgets/bottom_nav.dart';
@@ -109,13 +111,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // ✨ Initialize notification service
     NotificationService.init();
 
-    // ✨ FIX: Initialize here safely
-    _autoClockOutService = AutoClockOutService(
-      checkInterval: GeofenceConfig.autoClockOutCheckInterval,
-      radiusInMeters: GeofenceConfig.autoClockOutRadius,
-      // radiusInMeters: 10.0, //testing purpose
-      onLeaveGeofence: _onUserLeftGeofence,
-    );
+    // ✨ SINGLETON: Use global instance instead of creating new
+    _autoClockOutService = AutoClockOutService.instance;
+    _autoClockOutService!.onLeaveGeofence = _onUserLeftGeofence;
 
     // ✨ Listen to auto clock-out status stream
     _autoClockOutService?.statusStream.listen((status) {
@@ -157,6 +155,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // Use addPostFrameCallback to ensure context is valid for showing dialogs
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initLocationAndClock();
+
+      // ✨ FIX: Trigger sync on app startup if online and have pending actions
+      _checkAndTriggerSync();
     });
 
     // ✨ Add app lifecycle observer to refresh status when app resumes
@@ -183,6 +184,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           });
         }
         debugPrint('📡 Connectivity refreshed on resume: $_isOnline');
+
+        // ✨ FIX: Trigger sync if online and have pending actions
+        if (isOnline) {
+          final pendingCount = await PendingSyncService.getPendingCount();
+          if (pendingCount > 0) {
+            debugPrint(
+              '🔄 App resumed online with $pendingCount pending actions, triggering sync...',
+            );
+            // ✨ AUDIT LOG: Sync triggered on app resume
+            await ClockAuditLogger.logSyncAttempt(
+              trigger: 'app_resumed',
+              pendingCount: pendingCount,
+            );
+            SyncService.syncPendingActions();
+          }
+        }
       } catch (e) {
         debugPrint('⚠️ Error checking connectivity on resume: $e');
       }
@@ -308,6 +325,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               debugPrint(
                 '🔄 WATCHDOG: Restarting service with saved parameters',
               );
+
+              // ✨ AUDIT LOG: Watchdog restart
+              await ClockAuditLogger.logServiceRestart(
+                serviceType: 'BackgroundGeofence',
+                clockRefGuid: clockRefGuid,
+                reason: 'Service died, watchdog detected and restarting',
+              );
+
               await BackgroundGeofenceService.startTracking(
                 targetLat: targetLat,
                 targetLng: targetLng,
@@ -332,7 +357,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _serviceWatchdog?.cancel(); // ✅ Stop watchdog
     _positionStreamSubscription?.cancel(); // ✨ Cancel stream
     _activityController.dispose();
-    _autoClockOutService?.dispose(); // ✨ FIX: Safe null check
+    // ✨ SINGLETON: Don't dispose - let it live across page navigation
+    // _autoClockOutService?.dispose();
     _connectivitySubscription?.cancel();
     _pendingSyncSubscription?.cancel(); // ✨ Cancel sync subscription
     WidgetsBinding.instance.removeObserver(this); // ✨ Remove lifecycle observer
@@ -350,6 +376,55 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     } catch (e) {
       debugPrint('Error refreshing pending count: $e');
+    }
+  }
+
+  /// ✨ FIX: Check and trigger sync on app startup if needed
+  /// ✨ FIX: Check and trigger sync on app startup if needed
+  Future<void> _checkAndTriggerSync() async {
+    try {
+      // Only sync if online
+      final isOnline = await ConnectivityService.checkConnectivity();
+      if (!isOnline) {
+        debugPrint('📵 App startup: Offline, skipping sync check');
+        // ✨ AUDIT LOG: Startup offline
+        final pendingCount = await PendingSyncService.getPendingCount();
+        await ClockAuditLogger.log(
+          eventType: 'APP_STARTUP',
+          description:
+              'App started OFFLINE. $pendingCount actions queued (will sync when online).',
+        );
+        return;
+      }
+
+      // Check if we have pending actions
+      final pendingCount = await PendingSyncService.getPendingCount();
+      if (pendingCount > 0) {
+        debugPrint(
+          '🚀 App startup: Found $pendingCount pending actions, triggering sync...',
+        );
+        // ✨ AUDIT LOG: Sync triggered on app startup
+        await ClockAuditLogger.logSyncAttempt(
+          trigger: 'app_startup',
+          pendingCount: pendingCount,
+        );
+        // Trigger sync (non-blocking)
+        SyncService.syncPendingActions();
+      } else {
+        debugPrint('✅ App startup: No pending actions to sync');
+        // ✨ AUDIT LOG: No pending actions on startup
+        await ClockAuditLogger.log(
+          eventType: 'APP_STARTUP',
+          description: 'App started ONLINE. No pending actions to sync.',
+        );
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error checking pending sync on startup: $e');
+      // ✨ AUDIT LOG: Error on startup sync check
+      await ClockAuditLogger.logError(
+        operation: 'App startup sync check',
+        error: e.toString(),
+      );
     }
   }
 
@@ -559,6 +634,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final cachedClock = await OfflineDatabase.getClockStatus();
       if (cachedClock != null && mounted) {
         debugPrint('⚡ Loaded clock status from cache (instant UI)');
+        // debugPrint('   Clock time from cache: ${cachedClock['clockTime']}');
         setState(() {
           _isClockedIn = cachedClock['isClockedIn'] == true;
           if (_isClockedIn) {
@@ -761,6 +837,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             final hours = difference.inHours;
             final minutes = difference.inMinutes % 60;
             _clockStatus = '$hours hours $minutes minute';
+
+            // Debug log every hour to track the issue (commented out for production)
+            // if (minutes == 0) {
+            //   debugPrint('⏱️  Duration Update:');
+            //   debugPrint('   Now: ${now.toIso8601String()}');
+            //   debugPrint('   Clock-in raw: $_clockInTime');
+            //   debugPrint('   Clock-in parsed: ${clockInDate.toIso8601String()}');
+            //   debugPrint('   Duration: $hours h $minutes m');
+            // }
           }
         }
       });
@@ -813,6 +898,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!mounted) return;
 
     if (result['success'] && result['isClockedIn'] == true) {
+      debugPrint('✅ User is clocked in - refreshing from server');
+      // debugPrint('   Clock time from server: ${result['clockTime']}');
       setState(() {
         _isClockedIn = true;
         _clockRefGuid = result['clockLogGuid'];
@@ -1456,9 +1543,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
 
     if (result['success'] && mounted) {
+      debugPrint('✅ Clock-in successful');
+      // debugPrint('   Clock time from clock-in API: ${result['clockTime']}');
+
+      final clockLogGuid = result['clockLogGuid'];
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      final userGuid = auth.userInfo?['userId'] ?? '';
+
+      // ✨ AUDIT LOG: Storage updates
+      await ClockAuditLogger.logStorageUpdate(
+        layer: 'Memory',
+        operation: 'Clock-in state saved',
+        clockRefGuid: clockLogGuid,
+        details: 'UI state updated',
+      );
+
       setState(() {
         _isClockedIn = true;
-        _clockRefGuid = result['clockLogGuid'];
+        _clockRefGuid = clockLogGuid;
         _clockInTime = result['clockTime'];
         _clockStatus = _formatClockTime(result['clockTime']); // ✨ Format time
       });
@@ -1466,6 +1568,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       // ✨ START GEOFENCE MONITORING AFTER CLOCK IN
       await AutoClockOutService.resetGlobalLock();
       await _startGeofenceMonitoringForClient(_selectedClient);
+
+      // ✨ AUDIT LOG: Service start
+      await ClockAuditLogger.logServiceStart(
+        serviceType: 'ForegroundGeofence',
+        clockRefGuid: clockLogGuid,
+        targetLocation: _selectedClient ?? 'unknown',
+      );
 
       // ✨ REQUEST NOTIFICATION PERMISSION AND START BACKGROUND TRACKING
       await _startBackgroundTracking();
@@ -1578,8 +1687,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     // ✨ STOP FOREGROUND AND BACKGROUND MONITORING
     _autoClockOutService?.stopMonitoring();
+
+    // ✨ AUDIT LOG: Service stop before clock-out
+    await ClockAuditLogger.logServiceStop(
+      serviceType: 'ForegroundGeofence',
+      reason: isAutomatic ? 'Auto clock-out triggered' : 'Manual clock-out',
+    );
+
     try {
       await BackgroundGeofenceService.stopTracking();
+
+      // ✨ AUDIT LOG: Background service stop
+      await ClockAuditLogger.logServiceStop(
+        serviceType: 'BackgroundGeofence',
+        reason: isAutomatic ? 'Auto clock-out triggered' : 'Manual clock-out',
+      );
     } catch (e) {
       debugPrint('⚠️ Error stopping background tracking: $e');
     }
@@ -1608,6 +1730,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await AutoClockOutService.resetGlobalLock();
 
     if (result['success'] && mounted) {
+      // ✨ AUDIT LOG: Clock-out success
+      await ClockAuditLogger.logClockOut(
+        clockRefGuid: _clockRefGuid!,
+        userId: userGuid,
+        isOnline: result['offline'] != true,
+        isAutomatic: isAutomatic,
+        reason: reason,
+      );
+
+      // ✨ AUDIT LOG: Service stop
+      await ClockAuditLogger.logServiceStop(
+        serviceType: 'ForegroundGeofence',
+        reason: isAutomatic ? 'Auto clock-out' : 'Manual clock-out',
+      );
+
       if (!isAutomatic) {
         // ✨ Show appropriate success message
         if (result['offline'] == true) {
@@ -1642,6 +1779,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _activityController.clear();
         _fieldVisibility = {};
       });
+
+      // ✨ AUDIT LOG: Storage cleared
+      await ClockAuditLogger.logStorageUpdate(
+        layer: 'Memory',
+        operation: 'Clock state cleared',
+        details: 'Clock-out completed, state reset',
+      );
 
       // ⚠️ CRITICAL: Explicitly stop monitoring to prevent ghost checks
       _autoClockOutService?.stopMonitoring();
@@ -2250,62 +2394,67 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (timeString == null || timeString.isEmpty) return null;
 
     try {
+      // debugPrint('🕐 Parsing clock time: "$timeString"');
+
+      DateTime parsedTime;
+
       // CASE 1: ISO 8601 with 'Z' (e.g., "2025-12-04T11:40:04.000Z")
-      // The API sends UTC time with 'Z' marker
+      // Already in UTC format with explicit marker
       if (timeString.contains('T') && timeString.endsWith('Z')) {
-        final utcTime = DateTime.parse(timeString);
-        final localTime = utcTime.toLocal();
-        return localTime;
+        parsedTime = DateTime.parse(timeString).toLocal();
+        // debugPrint('   → Case 1 (ISO with Z): Parsed as ${parsedTime.toIso8601String()}');
+        return parsedTime;
       }
-      // CASE 2: Space separated (e.g., "2025-12-04 03:40:27" or "2025-12-04 15:40:27")
-      // The API returns UTC time in space-separated format
-      // BUT we need to detect if it's already been converted to local
-      else if (timeString.contains(' ') && !timeString.contains('T')) {
+      // CASE 2: ISO without 'Z' (e.g., "2025-12-04T03:40:27")
+      // Try UTC first, but check if result makes sense
+      else if (timeString.contains('T') && !timeString.endsWith('Z')) {
+        // Try as UTC
+        final utcResult = DateTime.parse(timeString + 'Z').toLocal();
+        final now = DateTime.now();
+
+        // If UTC conversion creates future time (>5 min ahead), it's probably already local
+        if (utcResult.isAfter(now.add(Duration(minutes: 5)))) {
+          parsedTime = DateTime.parse(timeString); // Parse as local
+          // debugPrint('   → Case 2 (ISO as LOCAL): Parsed as ${parsedTime.toIso8601String()}');
+        } else {
+          parsedTime = utcResult;
+          // debugPrint('   → Case 2 (ISO as UTC): Parsed as ${parsedTime.toIso8601String()}');
+        }
+        return parsedTime;
+      }
+      // CASE 3: Space separated (e.g., "2025-12-04 03:40:27" or "2025-12-04 15:34:40")
+      // Server inconsistently returns UTC OR local time in this format
+      // Smart detection: Try UTC first, if result is in future, treat as local
+      else if (timeString.contains(' ')) {
         final isoString = timeString.replaceAll(' ', 'T');
 
-        // Parse as UTC first
-        final utcTime = DateTime.parse(isoString + 'Z');
-        final localTime = utcTime.toLocal();
-
-        // Check if the converted time is reasonable (within 1 hour of now)
-        // If the UTC->Local conversion gives us a time very close to now, it's correct
-        // If it gives us a time 8 hours in the future, the original was already local
+        // Try as UTC first
+        final utcResult = DateTime.parse(isoString + 'Z').toLocal();
         final now = DateTime.now();
-        final differenceInMinutes = localTime.difference(now).inMinutes.abs();
 
-        if (differenceInMinutes < 60) {
-          // Converted time is within 1 hour of now - correct UTC conversion
-          return localTime;
+        // If UTC conversion creates future time (>5 min ahead), it's already local time
+        if (utcResult.isAfter(now.add(Duration(minutes: 5)))) {
+          parsedTime = DateTime.parse(isoString); // Parse as local
+          // debugPrint('   → Case 3 (Space as LOCAL): Parsed as ${parsedTime.toIso8601String()}');
         } else {
-          // Converted time is far from now - original was already local time
-          final originalAsLocal = DateTime.parse(isoString);
-          return originalAsLocal;
+          parsedTime = utcResult;
+          // debugPrint('   → Case 3 (Space as UTC): Parsed as ${parsedTime.toIso8601String()}');
         }
+        return parsedTime;
       }
-      // CASE 3: ISO format without Z (e.g., "2025-12-04T11:40:04" or "2025-12-04T11:40:04.123456")
-      // Need to detect if it's UTC or already local time
-      else if (timeString.contains('T')) {
-        // Try UTC conversion first
-        final utcTime = DateTime.parse(timeString + 'Z');
-        final localTime = utcTime.toLocal();
-
-        // Check if the converted time is reasonable (within 1 hour of now)
-        final now = DateTime.now();
-        final differenceInMinutes = localTime.difference(now).inMinutes.abs();
-
-        if (differenceInMinutes < 60) {
-          // Converted time is within 1 hour of now - correct UTC conversion
-          return localTime;
-        } else {
-          // Converted time is far from now - original was already local time
-          final originalAsLocal = DateTime.parse(timeString);
-          return originalAsLocal;
-        }
-      }
-      // CASE 4: Fallback
+      // CASE 4: Unknown format - try parsing as-is
       else {
-        final time = DateTime.parse(timeString);
-        return time;
+        // Try parsing as UTC first
+        try {
+          parsedTime = DateTime.parse(timeString + 'Z').toLocal();
+          // debugPrint('   → Case 4 (Fallback with Z): Parsed as ${parsedTime.toIso8601String()}');
+          return parsedTime;
+        } catch (e) {
+          // If that fails, try parsing without 'Z' (might be local time already)
+          parsedTime = DateTime.parse(timeString);
+          // debugPrint('   → Case 4 (Fallback without Z): Parsed as ${parsedTime.toIso8601String()}');
+          return parsedTime;
+        }
       }
     } catch (e) {
       debugPrint('❌ Error parsing clock time "$timeString": $e');

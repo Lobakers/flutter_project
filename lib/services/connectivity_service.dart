@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:beewhere/services/clock_audit_logger.dart'; // ✨ For audit logging
 
 /// Service to monitor internet connectivity and trigger sync
 class ConnectivityService {
@@ -30,6 +31,13 @@ class ConnectivityService {
     _isOnline = result != ConnectivityResult.none;
 
     debugPrint('📡 Connectivity changed: ${_isOnline ? "ONLINE" : "OFFLINE"}');
+
+    // ✨ AUDIT LOG: Connectivity state change
+    ClockAuditLogger.logConnectivityChange(
+      isOnline: _isOnline,
+      previousState: wasOnline,
+      connectionType: result.toString(),
+    );
 
     // If we just came online, trigger sync
     if (!wasOnline && _isOnline) {
